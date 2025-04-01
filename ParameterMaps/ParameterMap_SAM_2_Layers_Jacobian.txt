@@ -1,0 +1,89 @@
+// IMPACT metric
+(Metric "Impact")
+
+(ModelsPath "/Data/Models/SAM2.1/Tiny_2_Layers.pt")
+(Dimension "2")
+(NumberOfChannels "3")
+(PatchSize "29*29")
+(VoxelSize "6*6" "3*3" "1.5*1.5" "1*1")
+(LayersMask "01")
+ 
+(SubsetFeatures "1000")
+(LayersWeight "1")
+(Mode "Jacobian")
+(GPU 0)
+(PCA "0")
+(Distance "L2")
+(FeaturesMapUpdateInterval -1)
+(WriteFeatureMaps "false")
+
+// Elastix configuration
+(MaximumNumberOfIterations 2000)
+(NumberOfSpatialSamples 2000)
+(Transform "RecursiveBSplineTransform")
+(NumberOfResolutions 4)
+(FinalGridSpacingInPhysicalUnits 8)
+(FixedImagePyramid "FixedGenericImagePyramid")
+(MovingImagePyramid "MovingGenericImagePyramid")
+(ImagePyramidRescaleSchedule 1 1 1 1 1 1 1 1 1 1 1 1)
+(ImagePyramidSmoothingSchedule 1 1 1 1 1 1 1 1 1 1 1 1)
+
+// imageTypes
+(FixedInternalImagePixelType "float")
+(MovingInternalImagePixelType "float")
+(UseDirectionCosines "true")
+
+// components
+(Registration "MultiMetricMultiResolutionRegistration")
+(BSplineTransformSplineOrder 3)
+(UseCyclicTransform "false")
+
+// transform
+(AutomaticTransformInitialization "false")
+(AutomaticTransformInitializationMethod "GeometricalCenter")
+(AutomaticScalesEstimation "true")
+(HowToCombineTransforms "Compose")
+
+// optimizer
+(Optimizer "AdaptiveStochasticGradientDescent")
+(MaximumNumberOfSamplingAttempts 8)
+(UseAdaptiveStepSizes "true")
+(UseMultiThreadingForMetrics "true")
+(ASGDParameterEstimationMethod "DisplacementDistribution")
+//(MaximumStepLength 0.6602)
+(SigmoidInitialTime 0.0)
+(NoiseCompensation "true")
+(NumberOfSamplesForExactGradient 4096)
+
+// automatic
+(AutomaticParameterEstimation "true")
+
+(FixedKernelBSplineOrder 3)
+(MovingKernelBSplineOrder 3)
+(CheckNumberOfSamples "true")
+(UseRelativeWeights "false")
+
+// several
+(WriteTransformParametersEachIteration "false")
+(WriteTransformParametersEachResolution "false")
+(ShowExactMetricValue "false")
+(ErodeFixedMask "false")
+(ErodeMovingMask "false")
+(UseBinaryFormatForTransformationParameters "false")
+
+// imageSampler
+(Interpolator "BSplineInterpolator")
+(ImageSampler "RandomCoordinate")
+(NewSamplesEveryIteration "true")
+(UseRandomSampleRegion "false")
+
+// interpolator and resampler
+(ResampleInterpolator "FinalBSplineInterpolator")
+(FinalBSplineInterpolationOrder 3)
+(BSplineInterpolationOrder 3)
+(Resampler "DefaultResampler")
+(WriteIterationInfo "false")
+(WriteResultImage "false")
+(DefaultPixelValue -1024)
+(ResultImageFormat "mha")
+

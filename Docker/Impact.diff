@@ -1,0 +1,3907 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 777be0a4..f37b3b49 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -31,6 +31,7 @@ if(ELASTIX_USE_OPENCL)
+   list(APPEND _GPU_depends ITKGPUCommon)
+ endif()
+ 
++find_package(Torch REQUIRED)
+ # Find ITK.
+ find_package(ITK 5.4.1 REQUIRED COMPONENTS
+     ITKCommon
+diff --git a/Components/CMakeLists.txt b/Components/CMakeLists.txt
+index 6bdd4eb8..a6c598fa 100644
+--- a/Components/CMakeLists.txt
++++ b/Components/CMakeLists.txt
+@@ -126,7 +126,11 @@ macro(ADD_ELXCOMPONENT name)
+     # Create project and static library
+     project(${name})
+     add_library(${name} STATIC ${filelist})
+-    target_link_libraries(${name} ${elxLinkLibs})
++    if (${name} STREQUAL "ImpactMetric")
++      target_link_libraries( ${name} ${elxLinkLibs} torch)  
++    else()
++      target_link_libraries( ${name} ${elxLinkLibs})
++    endif()
+     if(NOT ELASTIX_NO_INSTALL_DEVELOPMENT)
+       install(TARGETS ${name}
+         ARCHIVE DESTINATION ${ELASTIX_ARCHIVE_DIR}
+diff --git a/Components/Metrics/Impact/CMakeLists.txt b/Components/Metrics/Impact/CMakeLists.txt
+new file mode 100755
+index 00000000..cf97fb10
+--- /dev/null
++++ b/Components/Metrics/Impact/CMakeLists.txt
+@@ -0,0 +1,6 @@
++ADD_ELXCOMPONENT( ImpactMetric
++ elxImpactMetric.h
++ elxImpactMetric.hxx
++ elxImpactMetric.cxx
++ itkImpactImageToImageMetric.h
++ itkImpactImageToImageMetric.hxx)
+\ No newline at end of file
+diff --git a/Components/Metrics/Impact/ImpactLoss.hxx b/Components/Metrics/Impact/ImpactLoss.hxx
+new file mode 100644
+index 00000000..91943752
+--- /dev/null
++++ b/Components/Metrics/Impact/ImpactLoss.hxx
+@@ -0,0 +1,459 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++ /**
++ * \file ImpactLoss.hxx
++ * 
++ * Implementation of differentiable loss functions used in the IMPACT image registration metric.
++ * Each loss is implemented as a class inheriting from `Loss`, and can be registered dynamically
++ * via the `LossFactory` for use at runtime. 
++ * 
++ * Supports both static and Jacobian-based backpropagation modes.
++ */
++
++#ifndef _ImpactLoss_hxx
++#define _ImpactLoss_hxx
++
++#include <torch/torch.h>
++#include <cmath>
++#include <iostream>
++#include "itkTimeProbe.h"
++
++namespace ImpactLoss {
++
++/**
++ * \class Loss
++ * \brief Abstract base class for losses operating on extracted feature maps.
++ *
++ * Stores the accumulated loss value and its derivative, and provides methods for updating them.
++ * Designed to support both:
++ *   - Static mode (with manual update of derivative using precomputed jacobians)
++ *   - Jacobian mode (direct backpropagation of gradients)
++ *
++ * Subclasses must implement:
++ *   - updateValue()
++ *   - updateValueAndGetGradientModulator()
++ */
++class Loss {
++    private:
++        mutable double m_normalization = 0;
++    protected:
++        double m_value;
++        torch::Tensor m_derivative;
++        bool m_initialized = false;
++        int m_nb_parameters;
++    public:
++        Loss(bool isLossNormalized){
++            if(!isLossNormalized){
++                this->m_normalization = 1.0;
++            }
++        }
++
++        void set_nb_parameters(int nb_parameters){
++            this->m_nb_parameters = nb_parameters;
++        }
++        void reset(){
++            this->m_initialized = false;
++        }
++
++        virtual void initialize(torch::Tensor &output){
++            // Lazy initialization of internal buffers based on output tensor shape and number of parameters
++            if(!this->m_initialized){
++                this->m_value = 0;
++                this->m_derivative = torch::zeros({this->m_nb_parameters}, output.options());
++                this->m_initialized = true;
++            }
++        }
++
++        virtual void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) = 0;
++        virtual void updateValueAndDerivativeInStaticMode(torch::Tensor &fixedOutput, torch::Tensor &movingOutput, torch::Tensor &jacobian, torch::Tensor &nonZeroJacobianIndices) {
++            this->m_derivative.index_add_(0, nonZeroJacobianIndices.flatten(), (this->updateValueAndGetGradientModulator(fixedOutput, movingOutput).unsqueeze(-1) * jacobian).sum(1).flatten());
++        }
++        virtual torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) = 0;
++        void updateDerivativeInJacobianMode(torch::Tensor &jacobian, torch::Tensor &nonZeroJacobianIndices) {
++            this->m_derivative.index_add_(0, nonZeroJacobianIndices.flatten(), jacobian.flatten());
++        }
++
++        virtual double GetValue(double N) const {
++            if(this->m_normalization == 0){
++                this->m_normalization = 1/(this->m_value/N);
++            }
++            return this->m_normalization*this->m_value / N;
++        }
++
++        virtual torch::Tensor GetDerivative(double N) const {
++            return this->m_normalization*this->m_derivative.to(torch::kCPU) / N;
++        }
++
++        virtual ~Loss() = default;
++        
++        virtual Loss& operator+=(const Loss& other) {
++            if(!this->m_initialized && other.m_initialized){
++                this->m_value = other.m_value;
++                this->m_derivative = other.m_derivative;
++                this->m_initialized = true;
++            } else if(other.m_initialized){
++                this->m_value += other.m_value;
++                this->m_derivative += other.m_derivative;
++            }
++            return *this;
++        }
++};
++
++/**
++ * \class LossFactory
++ * \brief Singleton factory to register and create Loss instances by string name.
++ *
++ * Used to instantiate losses dynamically from configuration.
++ * Example: "L1", "L2", "NCC", etc.
++ */
++class LossFactory {
++public:
++    using CreatorFunc = std::function<std::unique_ptr<Loss>()>;
++
++    static LossFactory& Instance() {
++        static LossFactory instance;
++        return instance;
++    }
++
++    void RegisterLoss(const std::string& name, CreatorFunc creator) {
++        factoryMap[name] = creator;
++    }
++
++    std::unique_ptr<Loss> Create(const std::string& name) {
++        auto it = factoryMap.find(name);
++        if (it != factoryMap.end()) {
++            return it->second();
++        }
++        throw std::runtime_error("Error: Unknown loss function " + name);
++    }
++
++private:
++    std::unordered_map<std::string, CreatorFunc> factoryMap;
++};
++
++template <typename T>
++class RegisterLoss {
++public:
++    RegisterLoss(const std::string& name) {
++        LossFactory::Instance().RegisterLoss(name, []() { return std::make_unique<T>(); });
++    }
++};
++
++/**
++ * \class L1
++ * \brief L1 loss over feature vectors: mean absolute difference.
++ */
++class L1 : public Loss {
++    public:
++        L1(): Loss(true) {}
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            this->m_value += (fixedOutput - movingOutput).abs().mean(1).sum().item<double>();
++        }
++
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            this->initialize(fixedOutput);
++            torch::Tensor diffOutput = fixedOutput - movingOutput;
++            this->m_value += diffOutput.abs().mean(1).sum().item<double>();
++            return -torch::sign(diffOutput)/fixedOutput.size(1);
++        }
++};
++
++RegisterLoss<L1> L1_reg("L1"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class L2
++ * \brief Mean Squared Error (L2) over feature vectors.
++ */
++class L2 : public Loss {
++    public:
++    L2(): Loss(true) {}
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            this->m_value += (fixedOutput - movingOutput).pow(2).mean(1).sum().item<double>();
++        }
++        
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            this->initialize(fixedOutput);
++            torch::Tensor diffOutput = fixedOutput - movingOutput;
++            this->m_value += diffOutput.pow(2).mean(1).sum().item<double>();
++            return -2 * diffOutput/fixedOutput.size(1);
++        }
++};
++
++
++RegisterLoss<L2> MSE_reg("L2"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class Dice
++ * \brief Binary Dice loss (assumes thresholded activations).
++ *
++ * Rounds inputs to {0, 1} before computing overlap.
++ */
++class Dice : public Loss {
++public:
++    Dice() : Loss(false) {}
++
++    void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++        this->initialize(fixedOutput);
++        fixedOutput = torch::round(fixedOutput).clamp(0);
++        movingOutput = torch::round(movingOutput).clamp(0);
++
++        torch::Tensor intersection = (fixedOutput * movingOutput).sum(1);
++        torch::Tensor unionSum = (fixedOutput + movingOutput).sum(1);
++        torch::Tensor diceScore = (2 * intersection + 1e-6) / (unionSum + 1e-6); 
++        
++        this->m_value += (1 - diceScore.mean()).item<double>();
++    }
++
++    torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++        this->initialize(fixedOutput);
++        fixedOutput = torch::round(fixedOutput).clamp(0);
++        movingOutput = torch::round(movingOutput).clamp(0);
++        torch::Tensor intersection = (fixedOutput * movingOutput).sum(1);
++        torch::Tensor unionSum = (fixedOutput + movingOutput).sum(1);
++        torch::Tensor diceScore = (2 * intersection + 1e-6) / (unionSum + 1e-6); 
++        
++        this->m_value += (1 - diceScore.mean()).item<double>();
++        //itkGenericExceptionMacro("OKKKK");
++        return -(2 * (fixedOutput * unionSum.unsqueeze(-1) - intersection.unsqueeze(-1)) / (unionSum * unionSum + 1e-6).unsqueeze(-1));
++    }
++};
++
++
++RegisterLoss<Dice> Dice_reg("Dice"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class L1Cosine
++ * \brief Combined cosine similarity and exponential L1 loss.
++ *
++ * Useful for simultaneously penalizing direction and magnitude.
++ */
++class L1Cosine : public Loss {
++    private:
++        double lambda;
++    public:
++        L1Cosine(): Loss(false) {
++            this->lambda = 0.1;
++        }
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            torch::Tensor dot_product = (fixedOutput * movingOutput).sum(1);
++            torch::Tensor norm_fixed = torch::norm(fixedOutput, 2, 1);
++            torch::Tensor norm_moving = torch::norm(movingOutput, 2, 1);
++            torch::Tensor cosine = dot_product / (norm_fixed * norm_moving);
++            torch::Tensor expL1 = torch::exp(-this->lambda*(fixedOutput - movingOutput).abs());
++            this->m_value -= (cosine.unsqueeze(-1)*expL1).mean(1).sum().item<double>();
++        }
++
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            this->initialize(fixedOutput);
++            torch::Tensor diffOutput = fixedOutput - movingOutput;
++            torch::Tensor dot_product = (fixedOutput * movingOutput).sum(1);
++            torch::Tensor norm_fixed = torch::norm(fixedOutput, 2, 1);
++            torch::Tensor norm_moving = torch::norm(movingOutput, 2, 1);
++            torch::Tensor v = (norm_fixed * norm_moving);
++
++            torch::Tensor cosine = dot_product / (v);
++            torch::Tensor expL1 = torch::exp(-this->lambda*(fixedOutput - movingOutput).abs());
++                
++            torch::Tensor dCossine = -(fixedOutput/v.unsqueeze(-1) - (fixedOutput * movingOutput * movingOutput)/(v*norm_moving.pow(2)).unsqueeze(-1));
++            torch::Tensor dexpL1 = -torch::sign(diffOutput)*expL1/fixedOutput.size(1);
++            this->m_value -= (cosine.unsqueeze(-1)*expL1).mean(1).sum().item<double>();
++            return dCossine*dexpL1+cosine.unsqueeze(-1)*dexpL1;
++        }
++};
++
++RegisterLoss<L1Cosine> L1Cosine_reg("L1Cosine"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class Cosine
++ * \brief Cosine similarity loss (negative mean cosine between vectors).
++ */
++class Cosine : public Loss {
++    public:
++        Cosine(): Loss(false) {}
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            torch::Tensor dot_product = (fixedOutput * movingOutput).sum(1);
++            torch::Tensor norm_fixed = torch::norm(fixedOutput, 2, 1);
++            torch::Tensor norm_moving = torch::norm(movingOutput, 2, 1);
++            this->m_value -= (dot_product / (norm_fixed * norm_moving)).sum().item<double>();
++        }
++
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            this->initialize(fixedOutput);
++            torch::Tensor dot_product = (fixedOutput * movingOutput).sum(1);
++            torch::Tensor norm_fixed = torch::norm(fixedOutput, 2, 1);
++            torch::Tensor norm_moving = torch::norm(movingOutput, 2, 1);
++            torch::Tensor v = (norm_fixed * norm_moving);
++            this->m_value -= (dot_product / v).sum().item<double>();
++            return -(fixedOutput/v.unsqueeze(-1) - (fixedOutput * movingOutput * movingOutput)/(v*norm_moving.pow(2)).unsqueeze(-1));
++        }
++};
++
++RegisterLoss<Cosine> Cosine_reg("Cosine"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class DotProduct
++ * \brief Negative dot product loss (simple similarity).
++ */
++class DotProduct : public Loss {
++    public:
++        DotProduct(): Loss(false) {}
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            this->m_value -= (fixedOutput * movingOutput).sum(1).sum().item<double>();
++        }
++
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            this->initialize(fixedOutput);
++            this->m_value -= (fixedOutput * movingOutput).sum(1).sum().item<double>();
++            return -fixedOutput;
++        }
++};
++
++
++RegisterLoss<DotProduct> DotProduct_reg("DotProduct"); // Register the loss under its string name for factory-based creation
++
++/**
++ * \class NCC
++ * \brief Normalized Cross Correlation loss over feature vectors.
++ *
++ * Computes NCC between fixed and moving features across batches.
++ * Derivative is accumulated in static mode using full Jacobian tracking.
++ */
++class NCC : public Loss {
++    private:
++        torch::Tensor m_sff, m_smm, m_sfm, m_sf, m_sm;
++        torch::Tensor m_sfdm, m_smdm, m_sdm;
++
++    public:
++        NCC(): Loss(false) {}
++
++        void initialize(torch::Tensor &output) override{
++            if (!this->m_initialized) {
++                this->m_sff = torch::zeros({output.size(1)}, output.options());
++                this->m_smm = torch::zeros({output.size(1)}, output.options());
++                this->m_sfm = torch::zeros({output.size(1)}, output.options());
++                this->m_sf = torch::zeros({output.size(1)}, output.options());
++                this->m_sm = torch::zeros({output.size(1)}, output.options());
++                this->m_initialized = true;
++            }
++        }
++
++        void updateValue(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override {
++            this->initialize(fixedOutput);
++            this->m_sff += (fixedOutput * fixedOutput).sum(0);
++            this->m_smm += (movingOutput * movingOutput).sum(0);
++            this->m_sfm += (fixedOutput * movingOutput).sum(0);
++            this->m_sf += fixedOutput.sum(0);
++            this->m_sm += movingOutput.sum(0);
++        }
++
++        void updateValueAndDerivativeInStaticMode(torch::Tensor &fixedOutput, torch::Tensor &movingOutput, torch::Tensor &jacobian, torch::Tensor &nonZeroJacobianIndices) override {
++            // Accumulate first-order statistics and weighted Jacobians
++            // sfdm: sum(fixed * dM), smdm: sum(moving * dM), sdm: sum(dM)  
++            if (!this->m_initialized) {
++                this->m_sfdm = torch::zeros({fixedOutput.size(1), this->m_nb_parameters}, fixedOutput.options());
++                this->m_smdm = torch::zeros({fixedOutput.size(1), this->m_nb_parameters}, fixedOutput.options());
++                this->m_sdm = torch::zeros({fixedOutput.size(1), this->m_nb_parameters}, fixedOutput.options());
++            }
++            this->updateValue(fixedOutput, movingOutput);     
++            this->m_sfdm.index_add_(1, nonZeroJacobianIndices.flatten(), (fixedOutput.unsqueeze(-1)*jacobian).permute({1,0,2}).flatten(1,2));
++            this->m_smdm.index_add_(1, nonZeroJacobianIndices.flatten(), (movingOutput.unsqueeze(-1)*jacobian).permute({1,0,2}).flatten(1,2));
++            this->m_sdm.index_add_(1, nonZeroJacobianIndices.flatten(), (jacobian).permute({1,0,2}).flatten(1,2)); 
++        }
++
++        torch::Tensor updateValueAndGetGradientModulator(torch::Tensor &fixedOutput, torch::Tensor &movingOutput) override{
++            if (!this->m_initialized) {
++                this->m_derivative = torch::zeros({this->m_nb_parameters}, fixedOutput.options());
++            }
++            this->initialize(fixedOutput);
++                
++            const double N = fixedOutput.size(0);
++            torch::Tensor sff = (fixedOutput * fixedOutput).sum(0);
++            torch::Tensor smm = (movingOutput * movingOutput).sum(0);
++            torch::Tensor sfm = (fixedOutput * movingOutput).sum(0);
++            torch::Tensor sf = fixedOutput.sum(0);
++            torch::Tensor sm = movingOutput.sum(0);
++            
++            this->m_sff += sff;
++            this->m_smm += smm;
++            this->m_sfm += sfm;
++            this->m_sf += sf;
++            this->m_sm += sm;
++
++            torch::Tensor u = sfm-(sf * sm / N);
++            torch::Tensor v = torch::sqrt(sff-sf*sf/N)*torch::sqrt(smm-sm*sm/N); // v = a*b
++        
++            torch::Tensor u_p = fixedOutput-sf.unsqueeze(0)/N;
++            return -((u_p-u.unsqueeze(0)*(movingOutput-sm.unsqueeze(0)/N)/(smm-sm*sm/N).unsqueeze(0))/v.unsqueeze(0))/fixedOutput.size(1);        
++        }
++
++        double GetValue(double N) const override {
++            // Compute NCC loss from accumulated statistics: mean( -NCC(channel) )
++            if (N <= 0) return 0.0;
++            torch::Tensor u = this->m_sfm-(this->m_sf * this->m_sm / N);
++            torch::Tensor v = torch::sqrt(this->m_sff-this->m_sf*this->m_sf/N)*torch::sqrt(this->m_smm-this->m_sm*this->m_sm/N);
++            return -(u/v).mean().item<double>();
++        }
++
++        torch::Tensor GetDerivative(double N) const override {
++            if (this->m_derivative.defined()) {
++                return this->m_derivative.to(torch::kCPU);
++            }
++            
++            torch::Tensor u = this->m_sfm-(this->m_sf * this->m_sm / N);
++            torch::Tensor v = torch::sqrt(this->m_sff-this->m_sf*this->m_sf/N)*torch::sqrt(this->m_smm-this->m_sm*this->m_sm/N);
++            torch::Tensor u_p = this->m_sfdm-this->m_sf.unsqueeze(-1)*this->m_sdm/N;
++            return -((u_p-u.unsqueeze(-1)*(this->m_smdm-this->m_sm.unsqueeze(-1)*this->m_sdm/N)/(this->m_smm-this->m_sm*this->m_sm/N).unsqueeze(-1))/v.unsqueeze(-1)).mean(0).to(torch::kCPU);
++        }
++
++        NCC& operator+=(const Loss& other) override {
++            const auto* nccOther = dynamic_cast<const NCC*>(&other);
++            if (nccOther) {
++                this->m_sff += nccOther->m_sff;
++                this->m_smm += nccOther->m_smm;
++                this->m_sfm += nccOther->m_sfm;
++                this->m_sf += nccOther->m_sf;
++                this->m_sm += nccOther->m_sm;
++                if (this->m_sfdm.defined()) {
++                    this->m_sfdm += nccOther->m_sfdm;
++                    this->m_smdm += nccOther->m_smdm;
++                    this->m_sdm += nccOther->m_sdm;
++                }
++                if (this->m_derivative.defined()) {
++                    this->m_derivative += nccOther->m_derivative;
++                }
++            }
++            return *this;
++        }
++};
++
++RegisterLoss<NCC> NCC_reg("NCC"); // Register the loss under its string name for factory-based creation
++
++} // namespace ImpactLoss
++
++#endif // _ImpactLoss_hxx
+diff --git a/Components/Metrics/Impact/ImpactTensorUtils.h b/Components/Metrics/Impact/ImpactTensorUtils.h
+new file mode 100644
+index 00000000..c24524bf
+--- /dev/null
++++ b/Components/Metrics/Impact/ImpactTensorUtils.h
+@@ -0,0 +1,146 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++/**
++ * \file ImpactTensorUtils.h
++ * \brief Utilities for converting ITK images to Torch tensors and extracting features using TorchScript models.
++ *
++ * This module supports:
++ *  - Conversion between ITK image data and Torch tensors
++ *  - Patch-based evaluation of feature models (optionally with Jacobians)
++ *  - Optional PCA projection and feature selection
++ *  - Export of features and inputs for inspection
++ *
++ * These tools are used internally by the ImpactImageToImageMetric for deep learning-based image registration.
++ */
++
++#ifndef ImpactTensorUtils_h
++#define ImpactTensorUtils_h
++
++#include <torch/torch.h>
++#include <vector>
++#include <functional>
++#include <exception>
++#include "ImpactLoss.hxx"
++
++namespace ImpactTensorUtils {
++
++/**
++ * \brief Converts an ITK image to a Torch tensor using physical spacing.
++ * \param voxelSize Target voxel size in mm (used to resample).
++ * \param transformPoint Optional point-wise transform (e.g., deformation field).
++ */
++template <typename TImage, typename TInterpolator>
++torch::Tensor ImageToTensor(typename TImage::ConstPointer image, 
++                            typename TInterpolator::Pointer interpolator, 
++                            const std::vector<float>& voxelSize, 
++                            const std::function<typename TImage::PointType(const typename TImage::PointType&)>& transformPoint);
++
++/**
++ * \brief Converts a tensor (C×D×H×W) to a multi-channel ITK image.
++ * \details Uses the original image metadata (origin, spacing, direction).
++ */
++template <typename TImage, typename TFeatureImage>
++typename TFeatureImage::Pointer TensorToImage(typename TImage::ConstPointer image, torch::Tensor layers);
++
++/**
++ * \brief Applies one or more models to an image to extract feature maps.
++ * \param writeInputImage Optional function to export resampled input for debugging.
++ * \return Vector of ITK feature images, one per layer and model.
++ */
++template <typename TImage, typename FeaturesMaps, typename InterpolatorType, typename ModelConfiguration, typename FeaturesImageType>
++std::vector<FeaturesMaps> GetFeaturesMaps(
++    typename TImage::ConstPointer image,
++    typename InterpolatorType::Pointer interpolator,
++    const std::vector<ModelConfiguration>& modelsConfiguration,
++    torch::Device gpu,
++    std::vector<unsigned int> pca,
++    std::vector<torch::Tensor> & principal_components,
++    const std::function<void(typename TImage::ConstPointer, torch::Tensor &, const std::string&)>& writeInputImage,
++    const std::function<typename TImage::PointType(const typename TImage::PointType&)>& transformPoint = nullptr);
++
++/**
++ * \brief Tests the configuration of each model by generating outputs from dummy input.
++ *
++ * This is useful for validating TorchScript model compatibility and inferring output structure
++ * (e.g., number of layers, spatial shape, channels).
++ *
++ * Called during initialization to ensure models are properly loaded and executable.
++ */
++template <typename ModelConfiguration>
++std::vector<torch::Tensor> GetModelOutputsExample(
++    std::vector<ModelConfiguration>& modelsConfig,
++    const std::string& modelType,
++    torch::Device gpu);
++
++/**
++ * \brief Computes patch index offsets around a center point based on model config.
++ *
++ * This is used to extract local neighborhoods for each model (e.g., 5x5x5 patch).
++ */
++template<typename ModelConfiguration>
++std::vector<std::vector<float>> GetPatchIndex(ModelConfiguration modelConfiguration, unsigned int dimension);
++
++
++/**
++ * \brief Computes feature outputs for all patches using each model.
++ *
++ * For each patch:
++ *   - runs model forward pass
++ *   - applies optional feature sub-selection
++ * 
++ * \param evaluator  Callable to produce a tensor from a point + patch + subset
++ */
++template <class ModelConfiguration, class ImagePointType>
++std::vector<torch::Tensor> GenerateOutputs(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPoints,
++    const std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex,
++    const std::vector<torch::Tensor> subsetsOfFeatures,
++    torch::Device gpu,
++    const std::function<typename torch::Tensor(const ImagePointType&, const std::vector<std::vector<float>>&, const std::vector<long> &)>& evaluator);
++
++/**
++ * \brief Computes both feature outputs and their spatial Jacobians.
++ *
++ * For use in Jacobian-based optimization mode. Requires backpropagation through TorchScript.
++ *
++ * \param evaluator Callable that returns a pair (features, jacobian) from a point.
++ * \param losses    Mutable references to per-layer loss objects (updated incrementally).
++ */
++template <typename ModelConfiguration, typename ImagePointType>
++std::vector<torch::Tensor> GenerateOutputsAndJacobian(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPoints,
++    const std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex,
++    std::vector<torch::Tensor> subsetsOfFeatures,
++    std::vector<torch::Tensor> fixedOutputsTensor,
++    torch::Device gpu,
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses,
++    const std::function<typename torch::Tensor(const ImagePointType&, torch::Tensor &, const std::vector<std::vector<float>>&, const std::vector<long> &, int)>& evaluator);
++
++}
++
++
++
++
++#ifndef ITK_MANUAL_INSTANTIATION
++#  include "ImpactTensorUtils.hxx"
++#endif
++
++#endif // end #ifndef ImpactTensorUtils_h
+\ No newline at end of file
+diff --git a/Components/Metrics/Impact/ImpactTensorUtils.hxx b/Components/Metrics/Impact/ImpactTensorUtils.hxx
+new file mode 100644
+index 00000000..7b60f5ca
+--- /dev/null
++++ b/Components/Metrics/Impact/ImpactTensorUtils.hxx
+@@ -0,0 +1,674 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#ifndef _ImpactTensorUtils_hxx
++#define _ImpactTensorUtils_hxx
++
++#include "ImpactTensorUtils.h"
++#include <cuda_runtime.h>
++#include <c10/cuda/CUDACachingAllocator.h>
++#include "elxlog.h"
++#include <ATen/autocast_mode.h>
++
++/**
++ * ******************* ImageToTensor ***********************
++ */
++namespace ImpactTensorUtils {
++template <typename TImage, typename TInterpolator>
++torch::Tensor ImageToTensor(typename TImage::ConstPointer image, 
++                            typename TInterpolator::Pointer interpolator, 
++                            const std::vector<float>& voxelSize,
++                            const std::function<typename TImage::PointType(const typename TImage::PointType&)>& transformPoint) {
++    constexpr unsigned int Dimension = TImage::ImageDimension;
++    
++    // Compute the resampled image size based on target voxel spacing
++    auto oldSize = image->GetLargestPossibleRegion().GetSize();
++    std::vector<int64_t> newSize(Dimension);
++    for (unsigned int i = 0; i < Dimension; ++i) {
++        newSize[i] = static_cast<int>(oldSize[i] * image->GetSpacing()[i] / voxelSize[i] + 0.5);
++    }
++    // Allocate buffer to hold interpolated intensity values
++    std::vector<float> fixedImagesPatchValues;
++
++    
++    if (Dimension == 2){
++        fixedImagesPatchValues.resize(newSize[0] * newSize[1], 0.0f);
++        // For each target voxel, compute physical coordinates and interpolate intensity
++        #pragma omp parallel for collapse(2) schedule(dynamic)
++        for (int y = 0; y < newSize[1]; ++y) {
++            for (int x = 0; x < newSize[0]; ++x) {
++              unsigned int index = y * newSize[0] + x;
++              typename TImage::PointType imagePoint;
++              imagePoint[0] = image->GetOrigin()[0]+x*voxelSize[0];
++              imagePoint[1] = image->GetOrigin()[1]+y*voxelSize[1];
++              if (transformPoint) {
++                  fixedImagesPatchValues[index] = interpolator->Evaluate(transformPoint(imagePoint));
++              } else {
++                  fixedImagesPatchValues[index] = interpolator->Evaluate(imagePoint);
++              }
++            }
++        }
++        // Wrap raw buffer into a torch tensor and clone to detach from underlying data
++        return torch::from_blob(fixedImagesPatchValues.data(), {newSize[0], newSize[1]}, torch::kFloat).clone();
++    } else {
++        fixedImagesPatchValues.resize(newSize[0] * newSize[1] * newSize[2], 0.0f);
++        // For each target voxel, compute physical coordinates and interpolate intensity
++        #pragma omp parallel for collapse(3) schedule(dynamic)
++        for (int z = 0; z < newSize[2]; ++z) {
++            for (int y = 0; y < newSize[1]; ++y) {
++                for (int x = 0; x < newSize[0]; ++x) {
++                    unsigned int index = z * newSize[1] * newSize[0] + y * newSize[0] + x;
++                    typename TImage::PointType imagePoint;
++                    imagePoint[0] = image->GetOrigin()[0]+x*voxelSize[0];
++                    imagePoint[1] = image->GetOrigin()[1]+y*voxelSize[1];
++                    imagePoint[2] = image->GetOrigin()[2]+z*voxelSize[2];
++                    if (transformPoint) {
++                      fixedImagesPatchValues[index] = interpolator->Evaluate(transformPoint(imagePoint));
++                    } else {
++                      fixedImagesPatchValues[index] = interpolator->Evaluate(imagePoint);
++                    }
++                }
++            }
++        }
++        // Wrap raw buffer into a torch tensor and clone to detach from underlying data
++        return torch::from_blob(fixedImagesPatchValues.data(), {newSize[2], newSize[1], newSize[0]}, torch::kFloat).clone();
++    }
++} // end ImageToTensor
++
++/**
++ * ******************* TensorToImage ***********************
++ */
++template <typename TImage, typename TFeatureImage>
++typename TFeatureImage::Pointer TensorToImage(typename TImage::ConstPointer image, torch::Tensor layers) {
++    constexpr unsigned int Dimension = TImage::ImageDimension;
++    // Rearrange tensor dimensions to match ITK vector image layout
++    if(Dimension == 2){
++        layers = layers.permute({1, 2, 0}).contiguous();;
++    } else {
++        layers = layers.permute({1, 2, 3, 0}).contiguous();;
++    }
++
++    const unsigned int numberOfChannels = layers.size(Dimension);
++
++    typename TFeatureImage::Pointer itkImage = TFeatureImage::New();
++    typename TFeatureImage::RegionType region;
++    typename TFeatureImage::SizeType size;
++
++    itk::Point<double, Dimension> origin;
++    itk::Vector<float, Dimension> spacing;
++    itk::Matrix<double, Dimension, Dimension> direction;
++
++    for(int s = 0; s < Dimension; s++){ 
++        size[s] = layers.size(Dimension-1-s); 
++    }
++    region.SetSize(size);
++    itkImage->SetRegions(region);
++    itkImage->SetVectorLength(numberOfChannels);
++
++    auto oldSize = image->GetLargestPossibleRegion().GetSize();
++    for(int i = 0; i < Dimension; i++){
++        origin[i] = image->GetOrigin()[i];
++        spacing[i] = oldSize[i]*image->GetSpacing()[i]/size[i];
++    }
++    for (unsigned int i = 0; i < Dimension; ++i) {
++        for (unsigned int j = 0; j < Dimension; ++j) {
++            direction[i][j] = image->GetDirection()[i][j];
++        }
++    }
++    // Copy spatial metadata from input image to preserve geometry
++    itkImage->SetOrigin(origin);
++    itkImage->SetSpacing(spacing);
++    itkImage->SetDirection(direction);
++    itkImage->Allocate();
++
++    const float* layersData = layers.data_ptr<float>();
++    const unsigned int rowStride = size[0] * numberOfChannels;
++    const unsigned int sliceStride = size[0] * size[1] * numberOfChannels;
++    
++    // Write each pixel vector from the tensor into the ITK vector image format
++    if (Dimension == 2){
++        #pragma omp parallel for collapse(2) schedule(dynamic)
++        for (int x = 0; x < size[1]; ++x) {
++            for (int y = 0; y < size[0]; ++y) {
++                const float* pixelPtr = layersData + x * sliceStride + y * rowStride;
++                itk::VariableLengthVector<float> variableLengthVector(numberOfChannels);
++                for (unsigned int i = 0; i < numberOfChannels; i++) {
++                    variableLengthVector[i] = pixelPtr[i];
++                }
++                typename TFeatureImage::IndexType index;
++                index[0] = y;
++                index[1] = x;
++                itkImage->SetPixel(index, variableLengthVector);
++            }
++        }
++    } else {
++        #pragma omp parallel for collapse(3) schedule(dynamic)
++        for (int x = 0; x < size[2]; ++x) {
++            for (int y = 0; y < size[1]; ++y) {
++                for (int z = 0; z < size[0]; ++z) {
++                  const float* pixelPtr = layersData + x * sliceStride + y * rowStride + z * numberOfChannels;
++                  itk::VariableLengthVector<float> variableLengthVector(numberOfChannels);
++                  for (unsigned int i = 0; i < numberOfChannels; i++) {
++                      variableLengthVector[i] = pixelPtr[i];//layers[x][y][z][i].item<float>();
++                  }
++                  typename TFeatureImage::IndexType index;
++                  index[0] = z;
++                  index[1] = y;
++                  index[2] = x;   
++                  itkImage->SetPixel(index, variableLengthVector);
++                }
++            }
++        }
++    }
++    return itkImage;
++} // end TensorToImage
++
++/**
++ * ******************* generateCartesianProduct ***********************
++ */
++void generateCartesianProduct(
++    const std::vector<std::vector<int>>& startIndex,
++    std::vector<int>& current,
++    size_t depth,
++    std::vector<std::vector<int>>& result
++) {
++    // Recursive function to compute the Cartesian product of multiple 1D index sets
++    if (depth == startIndex.size()) {
++        result.push_back(current);
++        return;
++    }
++
++    for (unsigned int val : startIndex[depth]) {
++        current[depth] = val;
++        generateCartesianProduct(startIndex, current, depth + 1, result);
++    }
++} // end generateCartesianProduct
++
++/**
++ * ******************* getPatch ***********************
++ */
++torch::Tensor getPatch(std::vector<int> slice, std::vector<long> patchSize, torch::Tensor input){
++  torch::Tensor patch;
++  std::vector<int64_t> padding;
++  if (input.dim() == 2){
++    patch = input.index({
++      torch::indexing::Slice(static_cast<int>(slice[0]), static_cast<int>(slice[0] + patchSize[0])),
++      torch::indexing::Slice(static_cast<int>(slice[1]), static_cast<int>(slice[1] + patchSize[1]))
++    });
++  } else {
++    patch = input.index({
++      torch::indexing::Slice(static_cast<int>(slice[0]), static_cast<int>(slice[0] + patchSize[0])),
++      torch::indexing::Slice(static_cast<int>(slice[1]), static_cast<int>(slice[1] + patchSize[1])),
++      torch::indexing::Slice(static_cast<int>(slice[2]), static_cast<int>(slice[2] + patchSize[2]))
++    });
++  }
++  // Pad the patch if it's smaller than the expected size
++  for(int i = input.dim()-1; i >= 0 ; i--){
++    padding.push_back(0);
++    padding.push_back(patchSize[i]-patch.size(i));
++  }
++  return torch::constant_pad_nd(patch, padding, 0);
++} // end getPatch
++
++/**
++ * ******************* pca_fit ***********************
++ */
++torch::Tensor pca_fit(torch::Tensor input, int new_C) {
++  int C = input.size(0);
++  int D = input.size(1);
++  int H = input.size(2);
++  int W = input.size(3);
++  // Flatten spatial dimensions to compute PCA across feature channels
++  torch::Tensor reshaped = input.view({C, D * H * W});
++  torch::Tensor centered = reshaped - reshaped.mean(1, true);
++  // Center data and compute channel-wise covariance matrix
++  torch::Tensor covariance = torch::matmul(centered, centered.t()) / (D * H * W - 1);
++
++  torch::Tensor eigenvalues, eigenvectors;
++  std::tie(eigenvalues, eigenvectors) = torch::linalg_eigh(covariance);
++  // Select top-k eigenvectors as principal components
++  return eigenvectors.narrow(1, C - new_C, new_C);
++} // end pca_fit
++
++/**
++ * ******************* pca_transform ***********************
++ */
++torch::Tensor pca_transform(torch::Tensor input, torch::Tensor principal_components) {
++  int C = input.size(0);
++  int D = input.size(1);
++  int H = input.size(2);
++  int W = input.size(3);
++  torch::Tensor reshaped = input.view({C, D * H * W});
++  return torch::matmul(principal_components.t(), reshaped - reshaped.mean(1, true)).view({principal_components.size(1), D, H, W});
++} // end pca_transform
++
++/**
++ * ******************* GetFeaturesMaps ***********************
++ */
++template <typename TImage, typename FeaturesMaps, typename InterpolatorType, typename ModelConfiguration, typename FeaturesImageType>
++std::vector<FeaturesMaps> GetFeaturesMaps(
++    typename TImage::ConstPointer image,
++    typename InterpolatorType::Pointer interpolator,
++    const std::vector<ModelConfiguration>& modelsConfiguration,
++    torch::Device gpu,
++    std::vector<unsigned int> pca,
++    std::vector<torch::Tensor> & principal_components,
++    const std::function<void(typename TImage::ConstPointer, torch::Tensor &, const std::string&)>& writeInputImage,
++    const std::function<typename TImage::PointType(const typename TImage::PointType&)>& transformPoint)
++{   
++  std::vector<FeaturesMaps> featuresMaps;
++  {
++    torch::NoGradGuard no_grad;
++    for (const auto& config : modelsConfiguration) {
++      // Convert image to tensor representation for deep feature extraction
++      torch::Tensor inputTensor = ImageToTensor<TImage, InterpolatorType>(
++          image, interpolator, config.m_voxelSize, transformPoint);
++      if (writeInputImage){
++        std::string result;
++    
++        for (int i = 0; i < config.m_voxelSize.size(); ++i) {
++            if (i > 0) result += "_";
++
++            std::ostringstream oss;
++            oss << std::fixed << std::setprecision(2) << config.m_voxelSize[i];
++            result += oss.str();
++        }
++        writeInputImage(image, inputTensor, result+"mm");
++      }
++      std::vector<int64_t> channelRepeat(config.m_dimension + 1, 1);
++      channelRepeat[0] = config.m_numberOfChannels;
++
++      std::vector<std::vector<int>> inputStartIndices(config.m_dimension);
++      std::vector<long> patchSize = config.m_patchSize;
++      for (int dim = 0; dim < config.m_dimension; dim++) {
++          if(config.m_patchSize[dim] <= 0){
++            patchSize[dim] = inputTensor.size(inputTensor.dim()-config.m_dimension + dim);
++          }
++          for (int step = 0; step < std::ceil(inputTensor.size(inputTensor.dim()-config.m_dimension + dim) / static_cast<float>(patchSize[dim])); step++) {
++              inputStartIndices[dim].push_back(patchSize[dim] * step);
++          }
++      }
++
++      std::vector<std::vector<int>> inputSlices;
++      std::vector<int> inputCurrent(config.m_dimension);
++      generateCartesianProduct(inputStartIndices, inputCurrent, 0, inputSlices);
++      std::vector<std::vector<std::vector<int>>> layersSlices;
++      std::vector<torch::Tensor> layers;
++      std::vector<std::vector<double>> ratio;
++
++      if (config.m_dimension < inputTensor.dim()) {
++        for (int depthIndex = 0; depthIndex < inputTensor.size(0); depthIndex++) {
++          for (int sliceIndex = 0; sliceIndex < inputSlices.size(); sliceIndex++) {
++            torch::Tensor inputPatch = getPatch(inputSlices[sliceIndex], patchSize, inputTensor[depthIndex])
++                                          .unsqueeze(0)
++                                          .repeat({torch::IntArrayRef(channelRepeat)})
++                                          .unsqueeze(0)
++                                          .to(gpu);
++            std::vector<torch::jit::IValue> outputsPatch = config.m_model->forward({inputPatch}).toList().vec();
++           
++
++            if (config.m_layersMask.size() != outputsPatch.size()) {
++              itkGenericExceptionMacro("Mismatch between layersMask size and model output layers.");
++            }
++            for (size_t layerIndex = 0, realLayerIndex = 0; layerIndex < outputsPatch.size(); layerIndex++) {
++              if (config.m_layersMask[layerIndex]) {
++                torch::Tensor layerPatch = outputsPatch[layerIndex].toTensor().squeeze(0).to(torch::kCPU).to(torch::kFloat);
++                
++                if (sliceIndex == 0 && depthIndex == 0) {
++                  ratio.push_back({layerPatch.size(1)/static_cast<double>(patchSize[0]), layerPatch.size(2)/static_cast<double>(patchSize[1])});
++                
++                  std::vector<std::vector<int>> layerStartIndices(config.m_dimension);
++                  std::vector<long> layerSize(config.m_dimension+2);
++                  layerSize[0] = layerPatch.size(0);
++                  layerSize[1] = inputTensor.size(0);
++
++                  for(int it1 = 0; it1 < config.m_dimension; it1++){
++                    for(int it2 = 0; it2 < inputStartIndices[it1].size(); it2++){
++                      layerStartIndices[it1].push_back(layerPatch.size(it1+1)*it2);
++                    }
++                    layerSize[it1+2] = inputStartIndices[it1].size()*layerPatch.size(it1+1);
++                  }
++                  std::vector<int> layerCurrent(config.m_dimension);
++                  layersSlices.push_back(std::vector<std::vector<int>>());
++                  generateCartesianProduct(layerStartIndices, layerCurrent, 0, layersSlices[realLayerIndex]);
++
++                  layers.push_back(torch::zeros({torch::IntArrayRef(layerSize)}, torch::kFloat));
++                }
++                layers[realLayerIndex].index_put_({torch::indexing::Slice(), 
++                                  depthIndex,
++                                  torch::indexing::Slice(static_cast<int>(layersSlices[realLayerIndex][sliceIndex][0]), static_cast<int>(layersSlices[realLayerIndex][sliceIndex][0] + layerPatch.size(1))),
++                                  torch::indexing::Slice(static_cast<int>(layersSlices[realLayerIndex][sliceIndex][1]), static_cast<int>(layersSlices[realLayerIndex][sliceIndex][1] + layerPatch.size(2)))}, layerPatch);
++                realLayerIndex++;
++              }
++            }
++          }
++        }
++      } else {
++        for (int sliceIndex = 0; sliceIndex < inputSlices.size(); sliceIndex++) {
++          torch::Tensor inputPatch = getPatch(inputSlices[sliceIndex], patchSize, inputTensor)
++                                          .unsqueeze(0)
++                                          .repeat({torch::IntArrayRef(channelRepeat)})
++                                          .unsqueeze(0)
++                                          .to(gpu);
++          std::vector<torch::jit::IValue> outputsPatch = config.m_model->forward({inputPatch}).toList().vec();
++
++          if (config.m_layersMask.size() != outputsPatch.size()) {
++            itkGenericExceptionMacro("Mismatch between layersMask size and model output layers.");
++          }
++          for (size_t layerIndex = 0, realLayerIndex = 0; layerIndex < outputsPatch.size(); layerIndex++) {
++            if (config.m_layersMask[layerIndex]) {
++              torch::Tensor layerPatch = outputsPatch[layerIndex].toTensor().squeeze(0).to(torch::kCPU).to(torch::kFloat);
++
++              if (sliceIndex == 0) {
++                ratio.push_back({layerPatch.size(1)/static_cast<double>(patchSize[0]), layerPatch.size(2)/static_cast<double>(patchSize[1]), layerPatch.size(3)/static_cast<double>(patchSize[2])});
++                
++                std::vector<std::vector<int>> layerStartIndices(config.m_dimension);
++                std::vector<long> layerSize(config.m_dimension+1);
++                layerSize[0] = layerPatch.size(0);
++                for(int it1 = 0; it1 < config.m_dimension; it1++){
++                  for(int it2 = 0; it2 < inputStartIndices[it1].size(); it2++){
++                    layerStartIndices[it1].push_back(layerPatch.size(it1+1)*it2);
++                  }
++                  layerSize[it1+1] = inputStartIndices[it1].size()*layerPatch.size(it1+1);
++                }
++                std::vector<int> layerCurrent(config.m_dimension);
++                layersSlices.push_back(std::vector<std::vector<int>>());
++                generateCartesianProduct(layerStartIndices, layerCurrent, 0, layersSlices[realLayerIndex]);
++
++                layers.push_back(torch::zeros({torch::IntArrayRef(layerSize)}, torch::kFloat));
++              }
++              layers[realLayerIndex].index_put_({ torch::indexing::Slice(), 
++                                torch::indexing::Slice(static_cast<int>(layersSlices[realLayerIndex][sliceIndex][0]), static_cast<int>(layersSlices[realLayerIndex][sliceIndex][0] + layerPatch.size(1))),
++                                torch::indexing::Slice(static_cast<int>(layersSlices[realLayerIndex][sliceIndex][1]), static_cast<int>(layersSlices[realLayerIndex][sliceIndex][1] + layerPatch.size(2))),
++                                torch::indexing::Slice(static_cast<int>(layersSlices[realLayerIndex][sliceIndex][2]), static_cast<int>(layersSlices[realLayerIndex][sliceIndex][2] + layerPatch.size(3)))}, layerPatch);
++
++              realLayerIndex++;
++            }
++          }
++        }
++      }
++      unsigned int a = 0;
++      for (size_t i = 0; i < layers.size(); i++) {
++        std::vector<torch::indexing::TensorIndex> cutting;
++        int j = 0;
++        for(; j < layers[i].dim()-ratio[i].size(); j++){
++          cutting.push_back(torch::indexing::Slice());
++        }
++        for (int r = 0; r < ratio[i].size(); r++){
++          int end = -layers[i].size(j+r) + ratio[i][r]*inputTensor.size(j-1+r);
++          if (end <= 0){
++            end = layers[i].size(j+r);
++          }
++          cutting.push_back(torch::indexing::Slice(0, end));
++        }  
++        torch::Tensor result = layers[i].index(cutting);
++
++          if (pca[i] > 0){
++            if (principal_components.size() <= a){
++              principal_components.emplace_back(pca_fit(result, pca[i]));
++            }
++            result = pca_transform(result, principal_components[a]);
++            a++;
++          }
++          featuresMaps.emplace_back(TensorToImage<TImage, FeaturesImageType>(image, result));
++      }
++    }
++  }
++  return featuresMaps;
++} // end GetFeaturesMaps
++
++
++/**
++ * **************** GetModelOutputsExample ****************
++ */
++template <typename ModelConfiguration>
++std::vector<torch::Tensor> GetModelOutputsExample(
++    std::vector<ModelConfiguration>& modelsConfig,
++    const std::string& modelType,
++    torch::Device gpu) {   
++
++  std::vector<torch::Tensor> outputsTensor;
++{
++    torch::NoGradGuard no_grad;
++  for (size_t i = 0; i < modelsConfig.size(); ++i) {
++    const auto& config = modelsConfig[i];
++    std::vector<int64_t> resizeVector(config.m_patchSize.size() + 1, 1);
++    resizeVector[0] = config.m_numberOfChannels;
++    std::vector<torch::jit::IValue> outputsList;
++    auto modelInput = torch::zeros({torch::IntArrayRef(config.m_patchSize)}, torch::kFloat)
++                          .unsqueeze(0)
++                          .repeat({torch::IntArrayRef(resizeVector)})
++                          .unsqueeze(0)
++                          .clone()
++                          .to(gpu);
++    try {
++      outputsList = config.m_model->forward({modelInput}).toList().vec();
++    } catch (const std::exception& e) {
++      itkGenericExceptionMacro("ERROR: The " << modelType << " model "<< i <<" configuration is invalid. The dimensions, number of channels, or patch size may not meet the requirements of the model.\n"
++                          "Details:\n"
++                          " - Number of channels: " << config.m_numberOfChannels << "\n"
++                          " - Patch size: " << config.m_patchSize << "\n"
++                          " - Dimension: " << config.m_dimension << "\n"
++                          "Please verify the configuration to ensure compatibility with the model.");
++    }
++    if (config.m_layersMask.size() != outputsList.size()) {
++      itkGenericExceptionMacro("Error: The number of " << modelType << " masks (" << config.m_layersMask.size()
++                << ") does not match the number of layers (" << outputsList.size()
++                << "). Please ensure that the configuration is consistent.");
++    }
++
++    for (size_t it = 0; it < outputsList.size(); ++it) {
++      if (config.m_layersMask[it]) {
++          outputsTensor.push_back(outputsList[it].toTensor().to(torch::kCPU).to(torch::kFloat));
++      }
++    }
++  }
++  for (size_t i = 0; i < modelsConfig.size(); ++i) {
++    auto& config = modelsConfig[i];
++    config.m_centersIndexLayers.clear();
++    for (size_t it = 0; it < outputsTensor.size(); ++it) {
++      std::vector<torch::indexing::TensorIndex> centersIndexLayer;
++      centersIndexLayer.push_back("...");
++      for(size_t j = 2; j < outputsTensor[it].dim(); ++j) {centersIndexLayer.push_back(outputsTensor[it].size(j) / 2);}
++      config.m_centersIndexLayers.push_back(centersIndexLayer);
++    }
++  }
++}
++  return outputsTensor;
++} // end GetModelOutputsExample
++
++/**
++ * ******************* GetPatchIndex ***********************
++ */
++template<typename ModelConfiguration>
++std::vector<std::vector<float>> GetPatchIndex(ModelConfiguration modelConfiguration, unsigned int dimension)
++{ 
++  if (dimension == modelConfiguration.m_patchSize.size()){
++    return modelConfiguration.m_patchIndex;
++  } else {
++    
++    using MatrixType = itk::Matrix<float, 3, 3>;
++    using Point3D = itk::Point<float, 3>;
++    
++    double radX = static_cast<double>(rand()) / RAND_MAX * 2 * M_PI;
++    double radY = static_cast<double>(rand()) / RAND_MAX * 2 * M_PI;
++    double radZ = static_cast<double>(rand()) / RAND_MAX * 2 * M_PI;
++    
++    MatrixType rotationX;
++    MatrixType rotationY;
++    MatrixType rotationZ;
++    
++    rotationX.SetIdentity();
++    rotationY.SetIdentity();
++    rotationZ.SetIdentity();
++    
++    rotationX[1][1] = cos(radX);
++    rotationX[1][2] = -sin(radX);
++    rotationX[2][1] = sin(radX);
++    rotationX[2][2] = cos(radX);
++    
++    rotationY[0][0] = cos(radY);
++    rotationY[0][2] = sin(radY);
++    rotationY[2][0] = -sin(radY);
++    rotationY[2][2] = cos(radY);
++    
++    rotationZ[0][0] = cos(radZ);
++    rotationZ[0][1] = -sin(radZ);
++    rotationZ[1][0] = sin(radZ);
++    rotationZ[1][1] = cos(radZ);
++    
++    MatrixType matrix = rotationZ * rotationY * rotationX;
++    std::vector<std::vector<float>> patchIndex;
++    
++    for (int y = 0; y < modelConfiguration.m_patchSize[1]; ++y) {
++      for (int x = 0; x < modelConfiguration.m_patchSize[0]; ++x) {
++        Point3D point({(x-modelConfiguration.m_patchSize[0]/2)*modelConfiguration.m_voxelSize[0], (y-modelConfiguration.m_patchSize[1]/2)*modelConfiguration.m_voxelSize[1], 0});
++        point = matrix * point;
++        std::vector<float> vec(3);
++        vec[0] = point[0];
++        vec[1] = point[1];
++        vec[2] = point[2];
++        patchIndex.push_back(vec);
++      }
++    }
++    return patchIndex;
++  }
++} // end GetPatchIndex
++
++/**
++ * ******************* GenerateOutputs ***********************
++ */
++template <typename ModelConfiguration, typename ImagePointType>
++std::vector<torch::Tensor> GenerateOutputs(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPoints,
++    const std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex,
++    const std::vector<torch::Tensor> subsetsOfFeatures,
++    torch::Device gpu,
++    const std::function<typename torch::Tensor(const ImagePointType&, const std::vector<std::vector<float>>&, const std::vector<long> &)>& evaluator)
++{
++  
++    std::vector<torch::Tensor> outputsTensor;
++    {
++    torch::NoGradGuard no_grad;
++    unsigned int nbSample = fixedPoints.size();
++
++    int a = 0;
++    for (size_t i = 0; i < modelConfig.size(); ++i) {
++        const auto& config = modelConfig[i];
++
++        std::vector<int64_t> sizes(config.m_patchSize.size() + 1, -1);
++        sizes[0] = nbSample;
++
++        torch::Tensor patchValueTensor = torch::zeros({torch::IntArrayRef(config.m_patchSize)}, torch::kFloat)
++                                    .unsqueeze(0)
++                                    .expand(sizes)
++                                    .unsqueeze(1)
++                                    .clone();
++        
++        for (size_t s = 0; s < nbSample; ++s) {
++          patchValueTensor[s] = evaluator(fixedPoints[s], patchIndex[i][s], config.m_patchSize);
++        }
++
++        std::vector<int64_t> resizeVector(patchValueTensor.dim(), 1);
++        resizeVector[1] = config.m_numberOfChannels;
++        std::vector<torch::jit::IValue> outputsList = config.m_model->forward({patchValueTensor.to(gpu).repeat({torch::IntArrayRef(resizeVector)}).clone()}).toList().vec();
++
++        for (size_t it = 0; it < outputsList.size(); ++it) {
++            if (config.m_layersMask[it]) {
++              outputsTensor.push_back(outputsList[it].toTensor()
++                                            .index(config.m_centersIndexLayers[a])
++                                            .index_select(1, subsetsOfFeatures[a])
++                                            .to(torch::kFloat));
++              a++;
++            }
++        }
++    }
++    }
++    return outputsTensor;
++} // end GenerateOutputs
++
++/**
++ * ******************* GenerateOutputsAndJacobian ***********************
++ */
++template <typename ModelConfiguration, typename ImagePointType>
++std::vector<torch::Tensor> GenerateOutputsAndJacobian(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPoints,
++    const std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex,
++    std::vector<torch::Tensor> subsetsOfFeatures,
++    std::vector<torch::Tensor> fixedOutputsTensor,
++    torch::Device gpu,
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses,
++    const std::function<typename torch::Tensor(const ImagePointType&, torch::Tensor &, const std::vector<std::vector<float>>&, const std::vector<long> &, int)>& evaluator) 
++{
++    std::vector<torch::Tensor> layersJacobian;
++
++    unsigned int nbSample = fixedPoints.size();
++    unsigned int dimension = fixedPoints[0].size();
++
++    int a = 0;
++    for (size_t i = 0; i < modelConfig.size(); ++i) {
++        const auto& config = modelConfig[i];
++
++        std::vector<int64_t> sizes(config.m_patchSize.size() + 1, -1);
++        sizes[0] = nbSample;
++
++        torch::Tensor patchValueTensor = torch::zeros({torch::IntArrayRef(config.m_patchSize)}, torch::kFloat)
++                                    .unsqueeze(0)
++                                    .expand(sizes)
++                                    .unsqueeze(1)
++                                    .clone();
++        torch::Tensor imagesPatchesJacobians = torch::zeros({nbSample, static_cast<long>(patchIndex[i][0].size()), dimension}, torch::kFloat);
++        
++        for (size_t s = 0; s < nbSample; ++s) {
++          patchValueTensor[s] = evaluator(fixedPoints[s], imagesPatchesJacobians, patchIndex[i][s], config.m_patchSize, s);
++        }
++        
++        
++        std::vector<int64_t> resizeVector(patchValueTensor.dim(), 1);
++        resizeVector[1] = config.m_numberOfChannels;
++        patchValueTensor = patchValueTensor.to(gpu).repeat({torch::IntArrayRef(resizeVector)}).clone().set_requires_grad(true);
++        imagesPatchesJacobians = imagesPatchesJacobians.to(gpu).repeat({1,config.m_numberOfChannels,1}).clone();
++
++        std::vector<torch::jit::IValue> outputsList = config.m_model->forward({patchValueTensor}).toList().vec();
++        torch::Tensor layer, diffLayer, modelJacobian; 
++        for (size_t it = 0; it < outputsList.size(); ++it) {
++            if (config.m_layersMask[it]) {
++              int nb = std::accumulate(config.m_layersMask.begin(), config.m_layersMask.end(), 0);
++
++              layer = outputsList[it].toTensor().index(config.m_centersIndexLayers[a]).index_select(1, subsetsOfFeatures[a]).to(torch::kFloat);
++              torch::Tensor gradientModulator = losses[a]->updateValueAndGetGradientModulator(fixedOutputsTensor[a], layer);
++              std::vector<torch::Tensor> modelJacobians;
++              layersJacobian.push_back(torch::bmm(torch::autograd::grad({layer},
++                  {patchValueTensor},
++                  {gradientModulator},
++                  nb > 1,
++                  false)[0].flatten(1).unsqueeze(1), imagesPatchesJacobians));
++              
++              a++;
++            }
++        }
++    }
++    return layersJacobian;
++} // end GenerateOutputsAndJacobian
++
++
++}
++
++#endif // end #ifndef _ImpactTensorUtils_hxx
+\ No newline at end of file
+diff --git a/Components/Metrics/Impact/elxImpactMetric.cxx b/Components/Metrics/Impact/elxImpactMetric.cxx
+new file mode 100755
+index 00000000..54d1f8d6
+--- /dev/null
++++ b/Components/Metrics/Impact/elxImpactMetric.cxx
+@@ -0,0 +1,21 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#include "elxImpactMetric.h"
++
++elxInstallMacro(ImpactMetric);
+diff --git a/Components/Metrics/Impact/elxImpactMetric.h b/Components/Metrics/Impact/elxImpactMetric.h
+new file mode 100755
+index 00000000..94b03437
+--- /dev/null
++++ b/Components/Metrics/Impact/elxImpactMetric.h
+@@ -0,0 +1,277 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++ 
++#ifndef elxImpactMetric_h
++#define elxImpactMetric_h
++
++#include "elxIncludes.h" // include first to avoid MSVS warning
++#include "itkImpactImageToImageMetric.h"
++#include "itkVector.h"
++
++namespace elastix
++{
++
++/**
++ * \class ImpactMetric
++ * \brief A metric based on itk::ImpactImageToImageMetric.
++ *
++ * This metric compares semantic features extracted from one or more pretrained TorchScript models
++ * applied to both the fixed and moving images. Feature vectors are compared using a configurable loss,
++ * such as L1, L2, NCC, Cosine, or L1Cosine distance.
++ *
++ * ### Multi-model support
++ * Multiple pretrained models can be specified for both the fixed and moving images. Each model can have its own
++ * configuration (dimension, number of channels, patch size, voxel size, mask). To do this, simply provide **space-separated values**
++ * for each parameter, in the same order as the models listed.
++ *
++ * Example:
++ * \code
++ * (ModelsPath "/Data/Models/TS/M850_8_Layers.pt /Data/Models/MIND/R1D2.pt")
++ * (Dimension "3 3")
++ * (NumberOfChannels "1 1")
++ * (PatchSize "0*0*0 0*0*0")
++ * (VoxelSize "1.5*1.5*1.5 6*6*6")
++ * (LayersMask "00000001 1")
++ * \endcode
++ *
++ * ### Multi-resolution support
++ * All parameters support per-resolution configuration using Elastix's multi-resolution syntax.
++ * For instance:
++ * \code
++ * (PatchSize "5*5*5 5*5*5" "3*3*3 3*3*3" "1*1*1 1*1*1")
++ * \endcode
++ * specifies different patch sizes for each resolution level and model.
++ *
++ * The same logic applies to:
++ * - ModelsPath
++ * - VoxelSize
++ * - LayersMask
++ * - SubsetFeatures
++ * - LayersWeight
++ * - PCA
++ * - Distance
++ *
++ * If needed, you can provide separate configurations for the fixed and moving images
++ * by adding the <tt>Fixed</tt> or <tt>Moving</tt> prefix to each parameter name.
++ *
++ * \code
++ * (FixedModelsPath "...") and (MovingModelsPath "...")
++ * \endcode
++ *
++ * All related parameters (e.g., <tt>Dimension</tt>, <tt>VoxelSize</tt>, <tt>LayersMask</tt>, etc.)
++ * should then be specified separately using their <tt>Fixed*</tt> and <tt>Moving*</tt> versions.
++ *
++ * ### Key Parameters
++ *
++ * The parameters used in this class are:
++ *
++ * \param Mode Defines the operational mode of the metric. Possible values are:
++ *   - "Static": features are precomputed and held fixed during optimization.
++ *   - "Jacobian": gradients are backpropagated through the feature extractor.
++ *
++ * \param ModelsPath Specifies the path(s) to one or more TorchScript models used for feature extraction.
++ *   Space-separated values allow combining multiple models in parallel.
++ *   Example: <tt>(ModelsPath "/path/to/model1.pt /path/to/model2.pt")</tt>
++ *
++ * \param Dimension Defines the dimensionality of the input images (e.g., 2 or 3).
++ *   This must match the input expectation of each model (one value per model).
++ *   Example: <tt>(Dimension "3 2")</tt>
++ *
++ * \param NumberOfChannels Specifies the number of channels in the input images for each model.
++ *   For grayscale, use 1. Example: <tt>(NumberOfChannels "1 3")</tt>
++ *
++ * \param PatchSize Size of the patch used for local feature extraction, given per model.
++ *   Example: <tt>(PatchSize "5*5*5 7*7*7")</tt>
++ *
++ * \param VoxelSize Defines the physical spacing of voxels for each model's input space.
++ *   This determines patch resolution. Example: <tt>(VoxelSize "1.5*1.5*1.5 3*3*3")</tt>
++ *
++ * \param LayersMask A binary string (per model) indicating which output layers of the model to use.
++ *   Example: <tt>(LayersMask "00000001 1")</tt> uses the last layer of model 1 and layer 0 of model 2.
++ *
++ * \param SubsetFeatures Number of feature channels randomly selected per model.
++ *   Example: <tt>(SubsetFeatures "1000 32")</tt>
++ *
++ * \param LayersWeight Relative importance of each selected model/layer in the total loss computation.
++ *   Can be used to emphasize certain semantic levels. Example: <tt>(LayersWeight "1.0 0.5")</tt>
++ *
++ * \param GPU Index of the GPU device to use. Set to -1 to force CPU execution.
++ *   Example: <tt>(GPU -1)</tt>
++ *
++ * \param PCA Number of principal components to retain per model during optional PCA-based feature compression.
++ *   Set to 0 to disable PCA. Example: <tt>(PCA "32 3")</tt>
++ *
++ * \param Distance Specifies the similarity function to compare features.
++ *   Supported values per model: <tt>L1</tt>, <tt>L2</tt>, <tt>NCC</tt>, <tt>Cosine</tt>, <tt>L1Cosine</tt>, <tt>Dice</tt>.
++ *   Example: <tt>(Distance "L2 Cosine")</tt>
++ *
++ * \param FeaturesMapUpdateInterval Frequency (in iterations) at which feature maps are recomputed in "Static" mode.
++ *   Set to -1 to disable updates and keep features fixed. Example: <tt>(FeaturesMapUpdateInterval 10)</tt>
++ *
++ * \param WriteFeatureMaps Enables writing both the input images and the corresponding output feature maps
++ *   to disk in "Static" mode, for each model and each resolution level. This is useful for inspection,
++ *   debugging, or understanding which semantic features are being used during registration.
++ *
++ *   The files are saved to the output directory and follow the naming conventions:
++ *
++ *   - Input images:
++ *     <tt>Fixed_<N>_<M>.mha</tt> and <tt>Moving_<N>_<M>.mha</tt>
++ *     where <tt>N</tt> is the resolution level and <tt>M</tt> is the model index.
++ *
++ *   - Feature maps:
++ *     <tt>FeatureMap/Fixed_<N>_<R1>_<R2>_<R3>.mha</tt> and <tt>Moving_<N>_<R1>_<R2>_<R3>.mha</tt>
++ *     where <tt>R1, R2, R3</tt> are the voxels size.
++ *
++ *   Example: <tt>(WriteFeatureMaps "true")</tt>
++ *
++ *   Default is "false".
++ *
++ * \ingroup Metrics
++ */
++ 
++template <typename TElastix>
++class ITK_TEMPLATE_EXPORT ImpactMetric
++  : public itk::ImpactImageToImageMetric<typename MetricBase<TElastix>::FixedImageType,
++                                                          typename MetricBase<TElastix>::MovingImageType>
++  , public MetricBase<TElastix>
++{
++public:
++  ITK_DISALLOW_COPY_AND_MOVE(ImpactMetric);
++
++  /** Standard ITK-stuff. */
++  using Self = ImpactMetric;
++  using Superclass1 = itk::ImpactImageToImageMetric< typename MetricBase<TElastix>::FixedImageType,
++                                                                      typename MetricBase<TElastix>::MovingImageType>;
++  using Superclass2 = MetricBase<TElastix>;
++  using Pointer = itk::SmartPointer<Self>;
++  using ConstPointer = itk::SmartPointer<const Self>;
++
++  /** Method for creation through the object factory. */
++  itkNewMacro(Self);
++
++  /** Run-time type information (and related methods). */
++  itkOverrideGetNameOfClassMacro(ImpactMetric);
++  
++  /**
++  * Name of this class.
++  * Use this name in the parameter file to select this specific metric.
++  * Example:
++  * \code
++  * (Metric "Impact")
++  * \endcode
++  */
++  elxClassNameMacro("Impact");
++
++  /** Typedefs from the superclass. */
++  using typename Superclass1::CoordinateRepresentationType;
++  using typename Superclass1::MovingImageType;
++  using typename Superclass1::MovingImagePixelType;
++  using typename Superclass1::MovingImageConstPointer;
++  using typename Superclass1::FixedImageType;
++  using typename Superclass1::FixedImageConstPointer;
++  using typename Superclass1::FixedImageRegionType;
++  using typename Superclass1::TransformType;
++  using typename Superclass1::TransformPointer;
++  using typename Superclass1::InputPointType;
++  using typename Superclass1::OutputPointType;
++  using typename Superclass1::TransformJacobianType;
++  using typename Superclass1::InterpolatorType;
++  using typename Superclass1::InterpolatorPointer;
++  using typename Superclass1::RealType;
++  using typename Superclass1::GradientPixelType;
++  using typename Superclass1::GradientImageType;
++  using typename Superclass1::GradientImagePointer;
++  using typename Superclass1::FixedImageMaskType;
++  using typename Superclass1::FixedImageMaskPointer;
++  using typename Superclass1::MovingImageMaskType;
++  using typename Superclass1::MovingImageMaskPointer;
++  using typename Superclass1::MeasureType;
++  using typename Superclass1::DerivativeType;
++  using typename Superclass1::ParametersType;
++  using typename Superclass1::FixedImagePixelType;
++  using typename Superclass1::MovingImageRegionType;
++  using typename Superclass1::ImageSamplerType;
++  using typename Superclass1::ImageSamplerPointer;
++  using typename Superclass1::ImageSampleContainerType;
++  using typename Superclass1::ImageSampleContainerPointer;
++  using typename Superclass1::FixedImageLimiterType;
++  using typename Superclass1::MovingImageLimiterType;
++  using typename Superclass1::FixedImageLimiterOutputType;
++  using typename Superclass1::MovingImageLimiterOutputType;
++  using typename Superclass1::MovingImageDerivativeScalesType;
++
++  /** The fixed image dimension. */
++  itkStaticConstMacro(FixedImageDimension, unsigned int, FixedImageType::ImageDimension);
++  
++  /** The moving image dimension. */
++  itkStaticConstMacro(MovingImageDimension, unsigned int, MovingImageType::ImageDimension);
++
++  /** Typedef's inherited from Elastix. */
++  using typename Superclass2::ElastixType;
++  using typename Superclass2::RegistrationType;
++  using ITKBaseType = typename Superclass2::ITKBaseType;
++
++
++  /** Sets up a timer to measure the initialization time and
++   * calls the Superclass' implementation.
++   */
++  void
++  Initialize() override;
++
++  /** Update the current iteration and refresh feature maps in static mode.
++  */
++  void
++  AfterEachIteration() override;
++  
++  /**
++   * Do some things before each resolution:
++   * \li Set CheckNumberOfSamples setting
++   * \li Set UseNormalization setting
++   */
++  void
++  BeforeEachResolution() override;
++
++  
++protected:
++  /** The constructor. */
++  ImpactMetric() = default;
++  /** The destructor. */
++  ~ImpactMetric() override = default;
++
++  unsigned long m_CurrentIteration;
++
++private:
++  elxOverrideGetSelfMacro;
++  
++  /** Utility functions to parse Elastix-style vector strings. */
++  template <typename T> std::vector<T> GetVectorFromString(int size, std::string valueStr, T defaultValue);
++  template <typename T> std::vector<T> GetVectorFromString(int size, std::string valueStr, T defaultValue, char delimiter);
++  template <typename T> std::vector<T> GetVectorFromString(std::string valueStr, T defaultValue, char delimiter);
++  template <typename T> std::vector<T> GetVectorFromString(std::string valueStr, T defaultValue);
++
++  std::vector<typename Superclass1::ModelConfiguration> GenerateModelsConfiguration(unsigned int level, std::string type, std::string mode, unsigned int imageDimension);
++  template <typename T> std::string GetStringFromVector(const std::vector<T>& vec);
++};
++
++} // end namespace elastix
++
++#ifndef ITK_MANUAL_INSTANTIATION
++#  include "elxImpactMetric.hxx"
++#endif
++
++#endif // end #ifndef elxImpactMetric_h
+diff --git a/Components/Metrics/Impact/elxImpactMetric.hxx b/Components/Metrics/Impact/elxImpactMetric.hxx
+new file mode 100755
+index 00000000..486e6140
+--- /dev/null
++++ b/Components/Metrics/Impact/elxImpactMetric.hxx
+@@ -0,0 +1,510 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#ifndef elxImpactMetric_hxx
++#define elxImpactMetric_hxx
++
++#include "elxImpactMetric.h"
++#include "itkTimeProbe.h"
++#include <vector>
++#include <sstream>
++#include <filesystem>
++
++namespace elastix
++{
++
++/**
++ * ******************* Initialize ***********************
++ */
++template <typename TElastix>
++void
++ImpactMetric<TElastix>::Initialize()
++{
++  itk::TimeProbe timer;
++  timer.Start();
++  this->Superclass1::Initialize();
++  timer.Stop();
++  // Log all model configurations (fixed and moving) with full detail.
++  // This helps verify that the model settings are correctly parsed and applied.
++  std::ostringstream oss;
++  oss << "Initialization of Impact metric took: "
++      << static_cast<long>(timer.GetMean() * 1000)
++      << " ms with \nFixed : ";
++  for(int i = 0; i < this->GetFixedModelsConfiguration().size(); i++){
++    oss << "\n\tModel("<<i <<") : \n"
++    << "\t\tPath : " << this->GetFixedModelsConfiguration()[i].m_modelPath 
++    << "\n\t\tDimension : " <<  this->GetFixedModelsConfiguration()[i].m_dimension
++    << "\n\t\tNumberOfChannels : " << this->GetFixedModelsConfiguration()[i].m_numberOfChannels;
++    if(this->GetMode() != "Static"){
++      oss << "\n\t\tPatchSize : " << this->GetStringFromVector<long>(this->GetFixedModelsConfiguration()[i].m_patchSize);
++    }
++    oss << "\n\t\tVoxelSize : " << this->GetStringFromVector<float>(this->GetFixedModelsConfiguration()[i].m_voxelSize)
++    << "\n\t\tLayersMask : " << this->GetStringFromVector<bool>(this->GetFixedModelsConfiguration()[i].m_layersMask);
++  }
++  oss << "\nMoving : ";
++  for(int i = 0; i < this->GetMovingModelsConfiguration().size(); i++){
++    oss << "\n\tModel("<<i <<") : "
++    << "\n\t\tPath : " << this->GetMovingModelsConfiguration()[i].m_modelPath 
++    << "\n\t\tDimension : " <<  this->GetMovingModelsConfiguration()[i].m_dimension
++    << "\n\t\tNumberOfChannels : " << this->GetMovingModelsConfiguration()[i].m_numberOfChannels
++    << "\n\t\tPatchSize : " << this->GetStringFromVector<long>(this->GetMovingModelsConfiguration()[i].m_patchSize)
++    << "\n\t\tVoxelSize : " << this->GetStringFromVector<float>(this->GetMovingModelsConfiguration()[i].m_voxelSize)
++    << "\n\t\tLayersMask : " << this->GetStringFromVector<bool>(this->GetMovingModelsConfiguration()[i].m_layersMask);
++  }
++    
++  oss << "\nSubsetFeatures: " << this->GetStringFromVector<unsigned int>(this->GetSubsetFeatures())
++      << "\nPCA: " << this->GetStringFromVector<unsigned int>(this->GetPCA())
++      << "\nLayersWeight: " << this->GetStringFromVector<float>(this->GetLayersWeight())
++      << "\nDistance: " << this->GetStringFromVector<std::string>(this->GetDistance())
++      << "\nMode: " << this->GetMode()
++      << "\nGPU: " << this->GetGPU();
++
++  if (this->GetMode() == "Static") {
++    oss << "\nFeaturesMapUpdateInterval: " << this->GetFeaturesMapUpdateInterval()
++        << "\n WriteFeatureMaps: " << this->GetWriteFeatureMaps();
++    if(this->GetWriteFeatureMaps()){
++      oss << "\n FeatureMapsPath: " << this->GetFeatureMapsPath();  
++    }
++  }
++
++  log::info(oss.str());
++} // end Initialize()
++
++/**
++ * ******************* GetVectorFromString ***********************
++ */
++template <typename TElastix>
++template <typename T>
++std::vector<T> 
++ImpactMetric<TElastix>::GetVectorFromString(int size, std::string valueStr, T defaultValue)
++{
++  std::stringstream ss(valueStr);
++  std::vector<T> values;
++  T value;
++
++  while (ss >> value && values.size() < size) {
++    values.push_back(value);
++  }
++  if(values.empty()){
++      values.push_back(defaultValue);
++  }
++  while (values.size() < size) {
++    values.push_back(values[0]);
++  }
++  return values;
++} // end GetVectorFromString
++
++/**
++ * ******************* GetVectorFromString ***********************
++ */
++template <typename TElastix>
++template <typename T>
++std::vector<T> 
++ImpactMetric<TElastix>::GetVectorFromString(int size, std::string valueStr, T defaultValue, char delimiter)
++{
++    std::vector<T> values;
++
++    if (delimiter == '\0') {
++        for (char c : valueStr) {
++            if (values.size() >= size) break;
++            std::stringstream tokenStream(std::string(1, c));
++            T value;
++            if (tokenStream >> value) {
++                values.push_back(value);
++            }
++        }
++    } else {
++        std::stringstream ss(valueStr);
++        std::string token;
++
++        while (std::getline(ss, token, delimiter) && values.size() < size) {
++            std::stringstream tokenStream(token);
++            T value;
++            if (tokenStream >> value) {
++                values.push_back(value);
++            }
++        }
++    }
++    if (values.empty()) {
++        values.push_back(defaultValue);
++    }
++    while (values.size() < size) {
++        values.push_back(values[0]);
++    }
++
++    return values;
++} // end GetVectorFromString
++
++/**
++ * ******************* GetVectorFromString ***********************
++ */
++template <typename TElastix>
++template <typename T>
++std::vector<T> 
++ImpactMetric<TElastix>::GetVectorFromString(std::string valueStr, T defaultValue, char delimiter)
++{
++    std::vector<T> values;
++
++    if (delimiter == '\0') {
++        for (char c : valueStr) {
++            std::stringstream tokenStream(std::string(1, c));
++            std::string token;
++            if (tokenStream >> token) {
++              if constexpr (std::is_unsigned<T>::value) {
++                int temp = std::stoi(token);
++                if (temp < 0) {
++                  temp = 0;
++                }
++                values.push_back(static_cast<T>(temp));
++              } else {
++                values.push_back(static_cast<T>(token));
++              }
++            }
++        }
++    } else {
++        std::stringstream ss(valueStr);
++        std::string token;
++
++        while (std::getline(ss, token, delimiter)) {
++            std::stringstream tokenStream(token);
++            std::string token1;
++            if (tokenStream >> token1) {
++              if constexpr (std::is_unsigned<T>::value) {
++                int temp = std::stoi(token1);
++                if (temp < 0) {
++                  temp = 0;
++                }
++                values.push_back(static_cast<T>(temp));
++              } else {
++                values.push_back(static_cast<T>(token1));
++              }
++            }
++        }
++    }
++    if (values.empty()) {
++        values.push_back(defaultValue);
++    }
++    return values;
++} // end GetVectorFromString
++
++/**
++ * ******************* GetVectorFromString ***********************
++ */
++template <typename TElastix>
++template <typename T>
++std::vector<T> 
++ImpactMetric<TElastix>::GetVectorFromString(std::string valueStr, T defaultValue)
++{
++  std::stringstream ss(valueStr);
++  std::vector<T> values;
++  std::string token;
++
++  while (ss >> token) {
++    if constexpr (std::is_unsigned<T>::value) {
++      int temp = std::stoi(token);
++      if (temp < 0) {
++        temp = 0;
++      }
++      values.push_back(static_cast<T>(temp));
++    } else {
++      values.push_back(static_cast<T>(token));
++    }
++  }
++  if(values.empty()){
++      values.push_back(defaultValue);
++  }
++  return values;
++} // end GetVectorFromString
++
++/**
++ * ******************* GetStringFromVector ***********************
++ */
++template <typename TElastix>
++template <typename T>
++std::string 
++ImpactMetric<TElastix>::GetStringFromVector(const std::vector<T>& vec) {
++    std::stringstream ss;
++    ss << "(";
++    for (size_t i = 0; i < vec.size(); ++i) {
++        ss << vec[i];
++        if (i != vec.size() - 1) {
++            ss << " ";
++        }
++    }
++    ss << ")";
++    return ss.str();
++} // end GetStringFromVector
++
++/**
++ * ******************* GenerateModelsConfiguration ***********************
++ */
++template <typename TElastix>
++std::vector<typename ImpactMetric<TElastix>::Superclass1::ModelConfiguration>
++ImpactMetric<TElastix>::GenerateModelsConfiguration(unsigned int level, std::string type, std::string mode, unsigned int imageDimension)
++{
++  std::vector<typename ImpactMetric<TElastix>::Superclass1::ModelConfiguration> modelsConfiguration;
++  
++  /** Get and set the model path. */
++  std::string modelsPathStr;
++  this->GetConfiguration()->ReadParameter(modelsPathStr, type+"ModelsPath", this->GetComponentLabel(), level, 0);
++  std::vector<std::string> modelsPathVec = this->GetVectorFromString<std::string>(modelsPathStr, "Path");
++  if(modelsPathVec.empty()){
++    itkExceptionMacro("Error: The parameter " + type + "ModelsPath is empty. Please check the configuration file.");
++  }
++
++  /** Get and set the model dimension. */
++  std::string modelDimension;
++  this->GetConfiguration()->ReadParameter(modelDimension, type+"Dimension", this->GetComponentLabel(), level, 0);
++  std::vector<unsigned int> modelsDimensionVec = this->GetVectorFromString<unsigned int>(modelsPathVec.size(), modelDimension, 3);
++  
++  /** Get and set the number of channels in model entry. */
++  std::string numberOfChannels;
++  this->GetConfiguration()->ReadParameter(numberOfChannels, type+"NumberOfChannels", this->GetComponentLabel(), level, 0);
++  std::vector<unsigned int> numberOfChannelsVec = this->GetVectorFromString<unsigned int>(modelsPathVec.size(), numberOfChannels, 1);
++  std::vector<std::string> patchSizeVec;
++  /** Get and set the voxel size. */
++  std::string patchSizeStr;
++  this->GetConfiguration()->ReadParameter(patchSizeStr, type+"PatchSize", this->GetComponentLabel(), level, 0);
++  patchSizeVec = this->GetVectorFromString<std::string>(modelsPathVec.size(), patchSizeStr, "5*5*5");
++
++  /** Get and set the voxel size. */
++  std::string voxelSizeStr;
++  this->GetConfiguration()->ReadParameter(voxelSizeStr, type+"VoxelSize", this->GetComponentLabel(), level, 0);
++  std::vector<std::string> voxelSizeVec = this->GetVectorFromString<std::string>(modelsPathVec.size(), voxelSizeStr, "1.5*1.5*1.5");
++
++    /** Get and set the Strides. */
++  std::string layersMaskStr;
++  this->GetConfiguration()->ReadParameter(layersMaskStr, type+"LayersMask", this->GetComponentLabel(), level, 0);
++  std::vector<std::string> layersMaskVec = this->GetVectorFromString<std::string>(modelsPathVec.size(), layersMaskStr, "1");
++  
++  // Build the ModelConfiguration object for each model.
++  // Each configuration includes model path, input dimension, channel count,
++  // patch size, voxel size, and layer mask.
++  // In static mode, we flag the model to cache features at init.
++  for(int i = 0; i < modelsPathVec.size(); i++){
++    try {
++      if(mode == "Static"){
++        modelsConfiguration.emplace_back(modelsPathVec[i], modelsDimensionVec[i], numberOfChannelsVec[i], this->GetVectorFromString<long>(modelsDimensionVec[i], patchSizeVec[i], 5, '*'), this->GetVectorFromString<float>(imageDimension, voxelSizeVec[i], 1.5, '*'), this->GetVectorFromString<bool>(layersMaskVec[i], true, '\0'), true);
++      } else {
++        modelsConfiguration.emplace_back(modelsPathVec[i], modelsDimensionVec[i], numberOfChannelsVec[i], this->GetVectorFromString<long>(modelsDimensionVec[i], patchSizeVec[i], 5, '*'), this->GetVectorFromString<float>(modelsDimensionVec[i], voxelSizeVec[i], 1.5, '*'), this->GetVectorFromString<bool>(layersMaskVec[i], true, '\0'), false);
++      }
++    } catch (const c10::Error& e) {
++      itkExceptionMacro("ERROR: the fixed model are not loaded from this file : " << modelsPathVec[i] << ".");
++    }
++  }
++  return modelsConfiguration;
++} // end GenerateModelsConfiguration
++
++/**
++ * ***************** BeforeEachResolution ***********************
++ * Read user-specified configuration for model, loss type, etc.
++ */
++template <typename TElastix>
++void
++ImpactMetric<TElastix>::BeforeEachResolution()
++{
++  this->m_CurrentIteration = 0;
++
++  /** Get the current resolution level. */
++  unsigned int level = (this->m_Registration->GetAsITKBaseType())->GetCurrentLevel();
++  this->SetCurrentLevel(level);
++
++  // Read the mode of operation for the metric: "Jacobian" or "Static".
++  // - Static: features are precomputed and optionally saved.
++  // - Jacobian: gradients are propagated through the models.
++  std::string mode = "Jacobian";
++  this->GetConfiguration()->ReadParameter(mode, "Mode", this->GetComponentLabel(), level, 0);
++  if(mode != "Jacobian" && mode != "Static"){
++     itkExceptionMacro("Invalid mode: '" << mode << "'. Supported modes are 'Jacobian' and 'Static'. Please check the configuration.");
++  }
++  this->SetMode(mode);
++
++  // Try to read shared model path (used if FixedModelsPath / MovingModelsPath are not provided)
++  std::string modelsPath;
++  bool hasSharedModel = this->GetConfiguration()->ReadParameter(modelsPath, "ModelsPath", this->GetComponentLabel(), level, 0);
++
++  // Generate configuration for fixed and moving images.
++  // Priority: FixedModelsPath > MovingModelsPath > ModelsPath
++  // This allows shared or asymmetric feature extractors.
++
++  // Generate fixed model configuration (fallback to shared if FixedModelsPath is missing)
++  bool hasFixed = this->GetConfiguration()->ReadParameter(modelsPath, "FixedModelsPath", this->GetComponentLabel(), level, 0);
++  if (hasFixed) {
++    this->SetFixedModelsConfiguration(this->GenerateModelsConfiguration(level, "Fixed", mode, FixedImageDimension));
++  } else if (hasSharedModel) {
++    this->SetFixedModelsConfiguration(this->GenerateModelsConfiguration(level, "", mode, FixedImageDimension));
++  } else {
++    itkExceptionMacro("Missing parameter: FixedModelsPath or shared ModelsPath must be provided.");
++  }
++
++  // Generate moving model configuration (fallback to shared if MovingModelsPath is missing)
++  bool hasMoving = this->GetConfiguration()->ReadParameter(modelsPath, "MovingModelsPath", this->GetComponentLabel(), level, 0);
++  if (hasMoving) {
++    this->SetMovingModelsConfiguration(this->GenerateModelsConfiguration(level, "Moving", mode, MovingImageDimension));
++  } else if (hasSharedModel) {
++    this->SetMovingModelsConfiguration(this->GenerateModelsConfiguration(level, "", mode, MovingImageDimension));
++  } else {
++    itkExceptionMacro("Missing parameter: MovingModelsPath or shared ModelsPath must be provided.");
++  }
++  
++  // Sanity check: models must not exceed image dimensionality
++  // Useful to catch errors with 3D models on 2D images, for example.
++  if (this->GetMode() == "Jacobian" && this->GetFixedModelsConfiguration().size() != this->GetMovingModelsConfiguration().size()){
++    itkExceptionMacro("Error: In 'Jacobian' mode, the number of fixed and moving models must be the same. Got " << this->GetFixedModelsConfiguration().size() << " fixed model(s) and "
++      << this->GetMovingModelsConfiguration().size() << " moving model(s).");
++  }
++
++  // Ensure model input dimensions are not higher than image dimensions (e.g., model dim 3 vs image dim 2)
++  for(int i = 0; i < this->GetFixedModelsConfiguration().size(); i++){
++    if(this->GetFixedModelsConfiguration()[i].m_dimension > FixedImageDimension){
++       itkExceptionMacro("ERROR: The dimension of the fixed input model image exceeds the allowed image dimensions. "
++                      "Expected a maximum of " << FixedImageDimension << " dimension(s), but received "
++                      << this->GetFixedModelsConfiguration()[i].m_dimension << " dimension(s) for model index " << i << ". "
++                      "Please verify the input model dimensions.");
++    }
++  }
++
++  for(int i = 0; i < this->GetMovingModelsConfiguration().size(); i++){
++    if(this->GetMovingModelsConfiguration()[i].m_dimension > FixedImageDimension){
++       itkExceptionMacro("ERROR: The dimension of the moving input model image exceeds the allowed image dimensions. "
++                      "Expected a maximum of " << MovingImageDimension << " dimension(s), but received "
++                      << this->GetMovingModelsConfiguration()[i].m_dimension << " dimension(s) for model index " << i << ". "
++                      "Please verify the input model dimensions.");
++    }
++  }
++  
++  // Choose GPU device if available and requested, fallback to CPU otherwise.
++  // Raise explicit errors if user-requested GPU index is invalid.
++  int device = 0;
++  this->GetConfiguration()->ReadParameter(device, "GPU", this->GetComponentLabel(), level, 0);
++  
++  // Select computation device (GPU or CPU) based on availability and config
++  if (device>= 0) {
++      if (torch::cuda::is_available()) {
++          int availableGPUs = torch::cuda::device_count(); 
++          if (device < availableGPUs) {
++              this->SetGPU(torch::Device(torch::kCUDA, device));
++          } else {
++              itkExceptionMacro("Requested GPU " << device 
++                              << " is out of range. Only " << availableGPUs 
++                              << " GPUs are available.");
++          }
++      } else {
++          itkExceptionMacro("CUDA is not available. Please check your CUDA installation or run on a compatible device.");
++      }
++  } else {
++      this->SetGPU(torch::Device(torch::kCPU));
++  }
++
++  // Handle feature map export setup.
++  // If WriteFeatureMaps is set (either "true" or a path), create the directory.
++  // Store the path to be reused during feature writing.
++  if(mode == "Static"){
++    int featuresMapUpdateInterval = -1;
++    this->GetConfiguration()->ReadParameter(featuresMapUpdateInterval, "FeaturesMapUpdateInterval", this->GetComponentLabel(), level, 0);
++    this->SetFeaturesMapUpdateInterval(featuresMapUpdateInterval);
++  }
++
++  //
++  int fixedNumberOfLayers = 0;
++  for(int i = 0; i < this->GetFixedModelsConfiguration().size(); i++){
++    std::vector<bool> layersMask = this->GetFixedModelsConfiguration()[i].m_layersMask;
++    fixedNumberOfLayers += std::count(layersMask.begin(), layersMask.end(), true);
++    this->GetFixedModelsConfiguration()[i].m_model->to(this->GetGPU());
++  }
++
++  int movingNumberOfLayers = 0;
++  for(int i = 0; i < this->GetMovingModelsConfiguration().size(); i++){
++    std::vector<bool> layersMask = this->GetMovingModelsConfiguration()[i].m_layersMask;
++    movingNumberOfLayers += std::count(layersMask.begin(), layersMask.end(), true);
++    this->GetMovingModelsConfiguration()[i].m_model->to(this->GetGPU());
++  }
++  
++  if (fixedNumberOfLayers != movingNumberOfLayers) {
++    itkExceptionMacro("Error: The number of layers in the fixed models (" << fixedNumberOfLayers 
++                      << ") does not match the number of layers in the moving model (" << movingNumberOfLayers 
++                      << "). Please ensure that the models are compatible.");
++  }
++  if(fixedNumberOfLayers == 0){
++    itkExceptionMacro("Error: At least one layer must be selected for comparison. "
++                      "Please ensure that the configuration includes at least one layer to be compared.");
++  }
++  /** Get and set the SubsetFeatures. */
++  std::string subsetFeaturesStr;
++  this->GetConfiguration()->ReadParameter(subsetFeaturesStr, "SubsetFeatures", this->GetComponentLabel(), level, 0);
++  this->SetSubsetFeatures(this->GetVectorFromString<unsigned int>(fixedNumberOfLayers, subsetFeaturesStr, 32));
++  
++  /** Get and set the SubsetFeatures. */
++  std::string pcaStr;
++  this->GetConfiguration()->ReadParameter(pcaStr, "PCA", this->GetComponentLabel(), level, 0);
++  this->SetPCA(this->GetVectorFromString<unsigned int>(fixedNumberOfLayers, pcaStr, 0));
++  
++  /** Get and set the LayersWeight. */
++  std::string layersWeightStr;
++  this->GetConfiguration()->ReadParameter(layersWeightStr, "LayersWeight", this->GetComponentLabel(), level, 0);
++  this->SetLayersWeight(this->GetVectorFromString<float>(fixedNumberOfLayers, layersWeightStr, 1.0));
++  this->SetWriteFeatureMaps(false);
++
++  if(mode == "Static"){
++    std::string writeFeatureMapsStr;
++    this->GetConfiguration()->ReadParameter(writeFeatureMapsStr, "WriteFeatureMaps", this->GetComponentLabel(), level, 0);
++    if (writeFeatureMapsStr != "false"){
++      // If enabled, prepare output directory for feature map export (Static mode)
++      if (!std::filesystem::exists(writeFeatureMapsStr)) {
++        try{
++          std::filesystem::create_directories(writeFeatureMapsStr);
++          std::filesystem::permissions(writeFeatureMapsStr,
++            std::filesystem::perms::owner_all | std::filesystem::perms::group_all | std::filesystem::perms::others_all,
++            std::filesystem::perm_options::replace);  
++            this->SetWriteFeatureMaps(true);
++            this->SetFeatureMapsPath(writeFeatureMapsStr);
++        } catch (std::filesystem::filesystem_error &e) {
++          itkExceptionMacro("Error creating directory for feature maps: " << writeFeatureMapsStr << "\n" << "Exception: " << e.what());
++        }
++      } else {
++        this->SetWriteFeatureMaps(true);
++      }
++    }
++  }
++
++  // Get and set the distances.
++  std::string distanceStr;
++  this->GetConfiguration()->ReadParameter(distanceStr, "Distance", this->GetComponentLabel(), level, 0);
++  this->SetDistance(this->GetVectorFromString<std::string>(fixedNumberOfLayers, distanceStr, "L2"));
++} // end BeforeEachResolution()
++
++
++/**
++ * ***************** AfterEachIteration ***********************
++ */
++template <typename TElastix>
++void
++ImpactMetric<TElastix>::AfterEachIteration()
++{
++  // In static mode, optionally update the moving feature maps during optimization.
++  // This allows hybrid modes where features are refreshed every N iterations.
++  this->m_CurrentIteration++;
++  if (this->GetMode() == "Static" && this->GetFeaturesMapUpdateInterval() > 0 && this->m_CurrentIteration%this->GetFeaturesMapUpdateInterval() == 0){
++    this->UpdateMovingFeaturesMaps(); 
++  }
++} // end AfterEachIteration()
++
++
++} // end namespace elastix
++
++#endif // end #ifndef elxImpactMetric_hxx
+diff --git a/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.h b/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.h
+new file mode 100644
+index 00000000..58573369
+--- /dev/null
++++ b/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.h
+@@ -0,0 +1,81 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++/**
++ * \class BSplineInterpolateVectorImageFunction
++ * \brief Helper class to interpolate each component of a VectorImage using separate B-Spline interpolators.
++ *
++ * This class enables feature-wise interpolation of ITK VectorImages using one B-Spline interpolator
++ * per channel. It supports evaluation at arbitrary physical points and returns the interpolated
++ * values or spatial derivatives as Torch tensors for downstream use in workflows.
++ */
++#ifndef itkBSplineInterpolateVectorImageFunction_h
++#define itkBSplineInterpolateVectorImageFunction_h
++
++#include <itkVectorImage.h>
++#include <itkBSplineInterpolateImageFunction.h>
++#include <vector>
++#include <torch/torch.h>
++
++template <typename TImage, typename TInterpolator>
++class BSplineInterpolateVectorImageFunction {
++public:
++    using ImageType = TImage;
++    using InterpolatorType = TInterpolator;
++    using PixelType = typename ImageType::PixelType;
++
++    BSplineInterpolateVectorImageFunction() = default;
++
++    /**
++    * \brief Initializes one B-Spline interpolator per feature channel in the input VectorImage.
++    *
++    * Each channel of the vector image is assigned its own BSpline interpolator. This is necessary
++    * since ITK's BSplineInterpolateImageFunction does not directly support VectorImages.
++    */
++    void SetInputImage(typename ImageType::Pointer vectorImage);
++
++    /**
++    * \brief Interpolates the selected feature channels at a given physical point.
++    *
++    * \param point The physical coordinate where interpolation is performed.
++    * \param subsetOfFeatures Indices of feature channels to interpolate.
++    * \return A 1D torch::Tensor containing interpolated values for the requested channels.
++    */
++    torch::Tensor Evaluate(typename ImageType::PointType point, std::vector<int> subsetOfFeatures) const;
++
++    /**
++    * \brief Evaluates the spatial derivative of selected features at a given point.
++    *
++    * Computes gradients of the selected feature channels with respect to spatial dimensions
++    * using the underlying B-Spline interpolators.
++    *
++    * \param point The physical coordinate at which derivatives are computed.
++    * \param subsetOfFeatures Indices of feature channels to differentiate.
++    * \return A 2D torch::Tensor (Channels × SpatialDimension) with spatial gradients per feature.
++    */
++    torch::Tensor EvaluateDerivative(typename ImageType::PointType point, std::vector<int> subsetOfFeatures) const;
++private:
++    typename ImageType::Pointer m_VectorImage;
++    std::vector<typename InterpolatorType::Pointer> m_Interpolators;
++};
++
++#ifndef ITK_MANUAL_INSTANTIATION
++#  include "itkBSplineInterpolateVectorImageFunction.hxx"
++#endif
++
++#endif // end #ifndef itkBSplineInterpolateVectorImageFunction_h
+\ No newline at end of file
+diff --git a/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.hxx b/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.hxx
+new file mode 100644
+index 00000000..659b561a
+--- /dev/null
++++ b/Components/Metrics/Impact/itkBSplineInterpolateVectorImageFunction.hxx
+@@ -0,0 +1,69 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#ifndef _itkBSplineInterpolateVectorImageFunction_hxx
++#define _itkBSplineInterpolateVectorImageFunction_hxx
++
++#include "itkBSplineInterpolateVectorImageFunction.h"
++#include <itkVectorIndexSelectionCastImageFilter.h>
++
++template <typename TImage, typename TInterpolator>
++void BSplineInterpolateVectorImageFunction<TImage, TInterpolator>::SetInputImage(typename TImage::Pointer vectorImage) {
++    // Loop over each feature (channel) in the vector image
++    // Create a separate scalar image and corresponding interpolator for it
++    for (unsigned int i = 0; i < vectorImage->GetVectorLength(); ++i) {
++        auto selector = itk::VectorIndexSelectionCastImageFilter<TImage, itk::Image<float, TImage::ImageDimension>>::New();
++        selector->SetInput(vectorImage);
++        selector->SetIndex(i);
++        selector->Update();
++
++        auto interpolator = TInterpolator::New();
++        interpolator->SetInputImage(selector->GetOutput());
++        interpolator->SetSplineOrder(3);
++        this->m_Interpolators.push_back(interpolator);
++    }
++}
++
++template <typename TImage, typename TInterpolator>
++typename torch::Tensor BSplineInterpolateVectorImageFunction<TImage, TInterpolator>::Evaluate(
++    typename TImage::PointType point, std::vector<int> subsetOfFeatures) const {
++    std::vector<float> result;
++    for (size_t i = 0; i < subsetOfFeatures.size(); ++i) {
++        result.push_back(this->m_Interpolators[subsetOfFeatures[i]]->Evaluate(point));
++    }
++    return torch::from_blob(result.data(), {static_cast<int64_t>(result.size())}, torch::kFloat).clone();
++}
++
++template <typename TImage, typename TInterpolator>
++typename torch::Tensor BSplineInterpolateVectorImageFunction<TImage, TInterpolator>::EvaluateDerivative(
++    typename ImageType::PointType point, std::vector<int> subsetOfFeatures) const{
++    using CovariantVectorType = itk::CovariantVector<float, TImage::ImageDimension>;
++    
++    std::vector<float> derivative(subsetOfFeatures.size()*TImage::ImageDimension, 0.0f);
++    CovariantVectorType dev;
++    // Fill the derivative tensor with directional gradients for each selected feature
++    for (size_t i = 0; i < subsetOfFeatures.size(); ++i) {
++        dev = this->m_Interpolators[subsetOfFeatures[i]]->EvaluateDerivative(point);
++        for (unsigned int it = 0; it < TImage::ImageDimension; it++){
++          derivative[i*TImage::ImageDimension+it] = static_cast<float>(dev[it]);
++        }
++    }
++    return torch::from_blob(derivative.data(), {static_cast<int64_t>(subsetOfFeatures.size()), TImage::ImageDimension}, torch::kFloat).clone();
++}
++
++#endif // end #ifndef _itkBSplineInterpolateVectorImageFunction_hxx
+\ No newline at end of file
+diff --git a/Components/Metrics/Impact/itkImpactImageToImageMetric.h b/Components/Metrics/Impact/itkImpactImageToImageMetric.h
+new file mode 100755
+index 00000000..ad3de857
+--- /dev/null
++++ b/Components/Metrics/Impact/itkImpactImageToImageMetric.h
+@@ -0,0 +1,627 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#ifndef itkImpactImageToImageMetric_h
++#define itkImpactImageToImageMetric_h
++
++#include "itkAdvancedImageToImageMetric.h"
++#include "itkBSplineInterpolateImageFunction.h"
++#include "itkBSplineInterpolateVectorImageFunction.h"
++#include "ImpactTensorUtils.h"
++#include "ImpactLoss.hxx"
++
++#include <torch/script.h>
++#include <torch/torch.h>
++#include <string>
++#include <vector>
++#include <random>
++#include <algorithm>
++
++namespace itk
++{
++
++/** \class ImpactImageToImageMetric
++ * \brief Semantic similarity metric for multimodal image registration based on deep features.
++ *
++ * This class is templated over the type of the fixed and moving images to be compared.
++ *
++ * Unlike conventional similarity metrics that rely on raw pixel intensities or handcrafted features,
++ * this metric leverages high-level semantic representations extracted from pretrained deep learning models.
++ * It enables robust registration by comparing the anatomical content of the fixed and moving images
++ * in a shared feature space, rather than relying on potentially inconsistent intensity relationships.
++ *
++ * The semantic features are extracted from pretrained segmentation models (e.g., TotalSegmentator, SAM2.1)
++ * and are used to guide the alignment of anatomical structures. These features are robust to noise,
++ * artifacts, and intensity inhomogeneities, making the metric particularly effective in multimodal settings.
++ *
++ * The similarity is computed by comparing feature representations extracted from local image patches
++ * (Jacobian mode) or from full feature maps (Static mode), using various distance functions (L1, L2, NCC, cosine).
++ * In Jacobian mode, gradients are propagated through the feature extractor to enable efficient optimization.
++ *
++ * The proposed metric, called IMPACT (Image Metric with Pretrained model-Agnostic Comparison for Transmodality registration),
++ * was shown to significantly improve alignment accuracy in several registration frameworks (Elastix, VoxelMorph),
++ * across different anatomical regions and imaging modalities (CT, CBCT, MRI).
++ *
++ * Key characteristics:
++ * - Semantic comparison based on deep features from pretrained segmentation networks.
++ * - Robust to modality gaps, noise, and anatomical variability.
++ * - Supports patch-based Jacobian mode and full-image Static mode.
++ * - Compatible with various similarity distance functions.
++ * - Fully integrated with multi-resolution strategies and weakly supervised mask-based optimization.
++ *
++ * \ingroup RegistrationMetrics
++ * \ingroup Metrics
++ */
++
++template <typename TFixedImage, typename TMovingImage>
++class ITK_TEMPLATE_EXPORT ImpactImageToImageMetric
++  : public AdvancedImageToImageMetric<TFixedImage, TMovingImage>
++{
++public:
++  ITK_DISALLOW_COPY_AND_MOVE(ImpactImageToImageMetric);
++
++  /** Standard class typedefs. */
++  using Self = ImpactImageToImageMetric;
++  using Superclass = AdvancedImageToImageMetric<TFixedImage, TMovingImage>;
++  using Pointer = SmartPointer<Self>;
++  using ConstPointer = SmartPointer<const Self>;
++
++  /** Method for creation through the object factory. */
++  itkNewMacro(Self);
++
++  /** Run-time type information (and related methods). */
++  itkTypeMacro(ImpactImageToImageMetric, AdvancedImageToImageMetric);
++
++  /** Typedefs from the superclass. */
++  using typename Superclass::CoordinateRepresentationType;
++  using typename Superclass::MovingImageType;
++  using typename Superclass::MovingImagePixelType;
++  using typename Superclass::MovingImageConstPointer;
++  using typename Superclass::FixedImageType;
++  using typename Superclass::FixedImageConstPointer;
++  using typename Superclass::FixedImageRegionType;
++  using typename Superclass::TransformType;
++  using typename Superclass::TransformPointer;
++  using typename Superclass::InputPointType;
++  using typename Superclass::OutputPointType;
++  using typename Superclass::TransformJacobianType;
++  using typename Superclass::NumberOfParametersType;
++  using typename Superclass::InterpolatorType;
++  using typename Superclass::InterpolatorPointer;
++  using typename Superclass::RealType;
++  using typename Superclass::GradientPixelType;
++  using typename Superclass::GradientImageType;
++  using typename Superclass::GradientImagePointer;
++  using typename Superclass::FixedImageMaskType;
++  using typename Superclass::FixedImageMaskPointer;
++  using typename Superclass::MovingImageMaskType;
++  using typename Superclass::MovingImageMaskPointer;
++  using typename Superclass::MeasureType;
++  using typename Superclass::DerivativeType;
++  using typename Superclass::DerivativeValueType;
++  using typename Superclass::ParametersType;
++  using typename Superclass::FixedImagePixelType;
++  using typename Superclass::MovingImageRegionType;
++  using typename Superclass::ImageSamplerType;
++  using typename Superclass::ImageSamplerPointer;
++  using typename Superclass::ImageSampleContainerType;
++  using typename Superclass::ImageSampleContainerPointer;
++  using typename Superclass::FixedImageLimiterType;
++  using typename Superclass::MovingImageLimiterType;
++  using typename Superclass::FixedImageLimiterOutputType;
++  using typename Superclass::MovingImageLimiterOutputType;
++  using typename Superclass::MovingImageDerivativeScalesType;
++  using typename Superclass::ThreadInfoType;
++
++  /** The fixed image dimension. */
++  itkStaticConstMacro(FixedImageDimension, unsigned int, FixedImageType::ImageDimension);
++
++  /** The moving image dimension. */
++  itkStaticConstMacro(MovingImageDimension, unsigned int, MovingImageType::ImageDimension);
++
++  /** Compute the similarity value (loss) for a given transformation parameter set.
++    * This method is intended for use with single-valued optimizers in a single-threaded context.
++    * It is typically used in testing or debugging scenarios.
++    */
++  virtual MeasureType
++  GetValueSingleThreaded(const ParametersType & parameters) const;
++  
++  /** Compute the similarity value (loss) for a given transformation parameter set.
++  * This is the main entry point for single-valued optimizers and is multi-threaded internally.
++  * It aggregates the contribution from all threads.
++  */
++  MeasureType
++  GetValue(const ParametersType & parameters) const override;
++
++  /** Compute the gradient (derivative) of the similarity value with respect to transformation parameters.
++    * Used in gradient-based optimization methods. Internally supports multi-threaded computation.
++    */
++  void
++  GetDerivative(const ParametersType & parameters, DerivativeType & derivative) const override;
++
++  /** Compute both the similarity value and its gradient in a single-threaded context.
++    */
++  void
++  GetValueAndDerivativeSingleThreaded(const ParametersType & parameters,
++                                      MeasureType &                   value,
++                                      DerivativeType &                derivative) const;
++  
++  /** Compute both the similarity value and its gradient in a multi-threaded context.
++    * This is the main function called by optimizers requiring both value and derivative,
++    * and it supports full parallel execution.
++    */
++  void
++  GetValueAndDerivative(const ParametersType & parameters,
++                        MeasureType &                   value,
++                        DerivativeType &                derivative) const override;
++
++  /**
++  * Initializes the metric and loads models, interpolators, and feature map settings.
++  * Called before the optimization loop starts. Ensures all configuration dependencies are resolved.
++  */
++  void
++  Initialize() override;
++
++  /** 
++  * Configuration structure for a TorchScript model used to extract semantic features. 
++  *
++  * Contains path to the model, number of input channels, patch size and voxel size,
++  * along with internal buffers (e.g., precomputed patch index and center extraction index).
++  * If the mode is not static, the patchIndex is generated here to optimize runtime computation.
++  */
++  struct ModelConfiguration{
++    std::string m_modelPath;
++    unsigned int m_dimension;
++    unsigned int m_numberOfChannels;
++    std::vector<long> m_patchSize;
++    std::vector<float> m_voxelSize;
++    std::vector<bool> m_layersMask;
++
++    std::shared_ptr<torch::jit::script::Module> m_model;
++
++    std::vector<std::vector<float>> m_patchIndex;
++    std::vector<std::vector<torch::indexing::TensorIndex>> m_centersIndexLayers;
++
++    ModelConfiguration(std::string modelPath, unsigned int dimension, unsigned int numberOfChannels, std::vector<long> patchSize, std::vector<float> voxelSize, std::vector<bool> layersMask, bool is_static)
++      : m_modelPath(modelPath), m_dimension(dimension), m_numberOfChannels(numberOfChannels), m_voxelSize(voxelSize), m_layersMask(layersMask), m_patchSize(patchSize)
++    {
++      this->m_model = std::make_shared<torch::jit::script::Module>(torch::jit::load(this->m_modelPath));
++      this->m_model->eval();
++      this->m_model->to(torch::kFloat);
++      if(!is_static){
++          /** Initialize some variables precalculation for loop performance */
++        this->m_patchIndex.clear();
++        if (this->m_patchSize.size() == 2){
++          for (int y = 0; y < this->m_patchSize[1]; ++y) {
++            for (int x = 0; x < this->m_patchSize[0]; ++x) {
++              this->m_patchIndex.push_back({(x-this->m_patchSize[0]/2)*this->m_voxelSize[0], (y-this->m_patchSize[1]/2)*this->m_voxelSize[1]});
++            }
++          }
++        } else {
++          for (int z = 0; z < this->m_patchSize[2]; ++z) {
++            for (int y = 0; y < this->m_patchSize[1]; ++y) {
++              for (int x = 0; x < this->m_patchSize[0]; ++x) {
++                this->m_patchIndex.push_back({(x-this->m_patchSize[0]/2)*this->m_voxelSize[0], (y-this->m_patchSize[1]/2)*this->m_voxelSize[1], (z-this->m_patchSize[2]/2)*this->m_voxelSize[2]});
++              }
++            }
++          }
++        }
++      }
++    }
++
++    bool operator==(const ModelConfiguration& rhs) const {
++        return m_modelPath == rhs.m_modelPath &&
++        m_dimension == rhs.m_dimension &&
++        m_numberOfChannels == rhs.m_numberOfChannels &&
++        m_patchSize == rhs.m_patchSize &&
++        m_voxelSize == rhs.m_voxelSize &&
++        m_layersMask == rhs.m_layersMask;
++    }
++  };
++
++  /** Set/Get the list of TorchScript model configurations used to extract features from the fixed image.
++    * Each model can target a different resolution, architecture, or semantic level.
++    */
++  itkSetMacro(FixedModelsConfiguration, std::vector<ModelConfiguration>);
++  itkGetConstMacro(FixedModelsConfiguration, std::vector<ModelConfiguration>);
++
++  /** Set/Get the list of TorchScript model configurations used to extract features from the moving image.
++    * Allows using different models for fixed and moving images to support asymmetric or multimodal setups.
++    */
++  itkSetMacro(MovingModelsConfiguration, std::vector<ModelConfiguration>);
++  itkGetConstMacro(MovingModelsConfiguration, std::vector<ModelConfiguration>);
++
++  /** Set/Get the subset of feature indices to be used in the loss computation.
++    * This allows dimensionality reduction or focusing on the most informative channels.
++    */
++  itkSetMacro(SubsetFeatures, std::vector<unsigned int>);
++  itkGetConstMacro(SubsetFeatures, std::vector<unsigned int>);
++
++  /** Set/Get the weights applied to each layer's loss contribution.
++    * Useful for balancing the influence of layers with different semantic granularity.
++    */
++  itkSetMacro(LayersWeight, std::vector<float>);
++  itkGetConstMacro(LayersWeight, std::vector<float>);
++
++
++  /** Set/Get the type of loss function used for each layer (e.g., "l1", "cosine", "ncc").
++    * Supports heterogeneous losses across layers to adapt to the nature of each feature representation.
++    */
++  itkSetMacro(Distance, std::vector<std::string>);
++  itkGetConstMacro(Distance, std::vector<std::string>);
++
++  /** Set/Get the number of principal components to keep after applying PCA to the feature maps.
++  * Set to 0 to disable PCA. Reduces dimensionality and improve runtime.
++  */
++  itkSetMacro(PCA, std::vector<unsigned int>);
++  itkGetConstMacro(PCA, std::vector<unsigned int>);
++  
++  /** Set/Get the GPU device on which all model inference and tensor operations are performed.
++  * Example: torch::Device(torch::kCUDA, 0) for GPU 0.
++  */
++  itkSetMacro(GPU, torch::Device);
++  itkGetConstMacro(GPU, torch::Device);
++
++  /** Set/Get whether the extracted feature maps should be written to disk (for inspection or debugging).
++    * Useful for visualizing the intermediate representations used by the metric.
++    */
++  itkSetMacro(WriteFeatureMaps, bool);
++  itkGetConstMacro(WriteFeatureMaps, bool);
++
++  /** Set/Get the directory path where feature maps will be written if WriteFeatureMaps is true.
++    * The path will be created if it does not exist.
++    */
++  itkSetMacro(FeatureMapsPath, std::string);
++  itkGetConstMacro(FeatureMapsPath, std::string);
++  
++  /** Set/Get the mode of operation: "Jacobian", "Static", or "Dynamic".
++    * - "Jacobian": online patch extraction with gradient backpropagation.
++    * - "Static": precomputed full feature maps.
++    */
++  itkSetMacro(Mode, std::string);
++  itkGetConstMacro(Mode, std::string);
++  
++  /** Set/Get the current resolution level
++    */
++  itkSetMacro(CurrentLevel, unsigned int);
++  itkGetConstMacro(CurrentLevel, unsigned int);
++
++  /** Set/Get how often (in number of optimizer iterations) the feature maps should be updated.
++    * A value of 0 disables updates (useful in static mode). Positive values enable periodic refreshes.
++    */
++  itkSetMacro(FeaturesMapUpdateInterval, int);
++  itkGetConstMacro(FeaturesMapUpdateInterval, int);
++
++protected:
++  ImpactImageToImageMetric();
++  ~ImpactImageToImageMetric() override = default;
++
++  /**
++    * Initializes per-thread loss structures and ensures thread safety for parallel execution.
++    * Overrides superclass method because the metric uses its own loss aggregation system.
++    */
++  void
++  InitializeThreadingParameters() const override;
++
++  /** Protected Typedefs ******************/
++
++  /**
++  * Thread-local structure that accumulates loss values and gradients for each layer.
++  *
++  * Encapsulates one loss object per output layer (as defined by layersMask), allowing multi-layer 
++  * loss computation and weighted aggregation. Also provides interfaces to get final loss and gradient.
++  */
++  struct LossPerThreadStruct {
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> m_losses;
++    std::vector<float> m_layersWeight;
++    SizeValueType m_numberOfPixelsCounted;
++    int m_nb_parameters;
++
++    void init(std::vector<std::string> distance_name, std::vector<float> layersWeight){
++      this->m_layersWeight = layersWeight;
++      for (std::string name : distance_name) {
++        m_losses.push_back(ImpactLoss::LossFactory::Instance().Create(name));
++      }
++    }
++
++    void set_nb_parameters(int nb_parameters){
++      this->m_nb_parameters = nb_parameters;
++      for (int l = 0; l < this->m_layersWeight.size(); l++) {
++        this->m_losses[l]->set_nb_parameters(nb_parameters);
++      }
++    }
++    
++    void reset(){
++      this->m_numberOfPixelsCounted = 0;
++      for (std::unique_ptr<ImpactLoss::Loss>& loss : m_losses) {
++        loss->reset();
++      }
++    }
++
++    double GetValue(){
++      MeasureType value = MeasureType{};
++      for (int l = 0; l < this->m_layersWeight.size(); l++) {
++        value += this->m_layersWeight[l]*this->m_losses[l]->GetValue(static_cast<double>(this->m_numberOfPixelsCounted));
++      }
++      return value;
++    }
++
++    DerivativeType GetDerivative(){
++      DerivativeType derivative = DerivativeType(this->m_nb_parameters);
++      derivative.Fill(DerivativeValueType{});
++      for (int l = 0; l < this->m_layersWeight.size(); l++) {
++        torch::Tensor d = this->m_layersWeight[l]*this->m_losses[l]->GetDerivative(static_cast<double>(this->m_numberOfPixelsCounted));
++        for(int i = 0; i < d.size(0); i++){
++          derivative[i] += d[i].item<float>();
++        }
++      }
++      return derivative;
++    }
++
++    LossPerThreadStruct& operator+=(const LossPerThreadStruct& other) {
++      const auto* lossPerThreadStructOther = dynamic_cast<const LossPerThreadStruct*>(&other);
++        if (lossPerThreadStructOther) {
++            m_numberOfPixelsCounted += lossPerThreadStructOther->m_numberOfPixelsCounted;
++            for (int i = 0; i < lossPerThreadStructOther->m_losses.size(); i++) {
++              *m_losses[i] += *lossPerThreadStructOther->m_losses[i];
++            }
++        }
++        return *this;
++    }
++  };
++
++  /** Typedefs inherited from superclass */
++  using typename Superclass::FixedImageIndexType;
++  using typename Superclass::FixedImageIndexValueType;
++  using typename Superclass::MovingImageIndexType;
++  using typename Superclass::FixedImagePointType;
++  using typename Superclass::MovingImagePointType;
++  using typename Superclass::MovingImageContinuousIndexType;
++  using typename Superclass::BSplineInterpolatorType;
++  using typename Superclass::MovingImageDerivativeType;
++  using typename Superclass::NonZeroJacobianIndicesType;
++
++  /** Check if a patch centered at the given fixed image point is valid for sampling.
++    * This version considers a specific patch layout (patchIndex) and verifies that all
++    * transformed points remain inside the moving image domain.
++    */
++  bool
++  SampleCheck(const FixedImagePointType & fixedImageCenterCoordinate, const std::vector<std::vector<float>> & patchIndex) const; 
++
++  /** Check if the fixed image point lies within valid bounds for sampling.
++    * This version does not consider patch geometry. It is used to validate
++    * isolated points before processing them in the similarity metric.
++    */
++  bool
++  SampleCheck(const FixedImagePointType & fixedImageCenterCoordinate) const; 
++
++  /** Compute the similarity value contribution for a given thread.
++    * This method is called in parallel across threads. Each thread accumulates
++    * a partial loss.
++    */
++  void
++  ThreadedGetValue(ThreadIdType threadID) const override;
++
++  /** Combine the similarity values computed by all threads.
++    * Aggregates the loss contributions stored in each thread’s `LossPerThreadStruct`
++    * into a global scalar value used by the optimizer.
++    */
++  void
++  AfterThreadedGetValue(MeasureType & value) const override;
++
++  /** Compute both similarity value and its derivative (gradient) for a given thread.
++    * Each thread computes the semantic loss and its gradient w.r.t. transformation parameters.
++    * Gradients are computed either analytically (Jacobian mode) or skipped (static mode).
++    */
++  void
++  ThreadedGetValueAndDerivative(ThreadIdType threadID) const override;
++
++  /** Combine the values and gradients computed by all threads.
++    * Final reduction step to produce global loss and gradient vectors used in optimization.
++    */
++  void
++  AfterThreadedGetValueAndDerivative(MeasureType & value, DerivativeType & derivative) const override;
++
++  /** Compute the semantic similarity value using the current transform parameters.
++    * This method evaluates the loss at all sampled points using the current transformation,
++    * without computing derivatives. It uses patch-based inference and feature comparison.
++    * Applicable in both Jacobian and static modes.
++    *
++    * \param fixedPoints Sampled points in the fixed image.
++    * \param losses Loss objects (one per semantic layer) to accumulate values.
++    * \return Number of valid samples used in the computation.
++    */
++  unsigned int ComputeValue(  
++    const std::vector<FixedImagePointType> & fixedPoints, 
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const;
++
++  /** Compute the semantic similarity value in static mode (precomputed feature maps).
++    * Unlike ComputeValue(), this version uses pre-extracted static features for both
++    * fixed and moving images, avoiding repeated forward passes through the model.
++    *
++    * \param fixedPoints Sampled points in the fixed image.
++    * \param losses Loss objects (one per semantic layer) to accumulate values.
++    * \return Number of valid samples used in the computation.
++    */
++  unsigned int ComputeValueStatic(  
++    const std::vector<FixedImagePointType> & fixedPoints, 
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const;
++
++  /** Compute both the semantic similarity value and its derivative using Jacobian mode.
++    * In this mode, gradients are backpropagated through the model to compute the
++    * sensitivity of the metric to transformation parameters. This is essential for
++    * enabling gradient-based optimization.
++    *
++    * \param fixedPoints Sampled points in the fixed image.
++    * \param losses Loss objects to store both values and gradients per layer.
++    * \return Number of valid samples used in the computation.
++    */
++  unsigned int ComputeValueAndDerivativeJacobian(  
++    const std::vector<FixedImagePointType> & fixedPoints,
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const;
++
++  /** Compute value and derivative in static mode (precomputed features).
++    * Gradients are computed via chain rule using the interpolated feature fields.
++    *
++    * \param fixedPoints Sampled points in the fixed image.
++    * \param losses Loss objects to store both values and gradients per layer.
++    * \return Number of valid samples used in the computation.
++    */
++  unsigned int ComputeValueAndDerivativeStatic(  
++    const std::vector<FixedImagePointType> & fixedPoints,
++    std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const;
++
++
++  /** Update the fixed feature maps (static mode).
++    * Re-extracts deep features from the images using the TorchScript models
++    * when entering a new pyramid level or after a feature update interval.
++    */
++  void UpdateFeaturesMaps();
++
++  /** Update the moving feature maps (static mode).
++    * Same as UpdateFeaturesMaps(), but applied to the moving image.
++    */
++  void UpdateMovingFeaturesMaps();
++
++private:
++
++  /** Interpolator for fixed image intensities, using B-spline of order 3 (double precision). */
++  using FixedInterpolatorType = BSplineInterpolateImageFunction<FixedImageType, CoordinateRepresentationType, double>;
++  /** Feature maps are stored as VectorImages of floats with same dimension as fixed image. */
++  using FeaturesImageType = itk::VectorImage<float, FixedImageDimension>;
++  /** Interpolator for feature maps (vector-valued), using scalar B-spline interpolation. */
++  using FeaturesInterpolatorType = BSplineInterpolateVectorImageFunction<FeaturesImageType, BSplineInterpolateImageFunction<itk::Image<float, FixedImageDimension>, CoordinateRepresentationType, float>>;
++
++  /**
++    * \struct FeaturesMaps
++    * Encapsulates both the feature map image and its associated interpolator.
++    * This allows evaluating feature vectors (and derivatives) at arbitrary points.
++    */
++  struct FeaturesMaps {
++    typename FeaturesImageType::Pointer m_featuresMaps;
++    FeaturesInterpolatorType m_featuresMapsInterpolator;
++
++    FeaturesMaps(typename FeaturesImageType::Pointer featuresMaps)
++        : m_featuresMaps(featuresMaps)
++    {
++      this->m_featuresMapsInterpolator = FeaturesInterpolatorType();
++      this->m_featuresMapsInterpolator.SetInputImage(featuresMaps);
++    }
++  };
++
++  using FeaturesMaps = typename ImpactImageToImageMetric<TFixedImage, TMovingImage>::FeaturesMaps;
++
++  /**
++    * Extracts a fixed image patch tensor centered at a point, using the precomputed patchIndex.
++    * Interpolation is performed using the fixed image interpolator.
++    */
++  torch::Tensor EvaluateFixedImagesPatchValue(const FixedImagePointType & fixedImageCenterCoordinate,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize) const;
++
++  /**
++    * Extracts a moving image patch tensor (intensity values) corresponding to a fixed point,
++    * using the transform and moving image interpolator.
++    */
++  torch::Tensor EvaluateMovingImagesPatchValue(const FixedImagePointType & fixedImageCenterCoordinate,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize) const;
++
++  /**
++  * Extracts moving image patch values *and* computes the spatial Jacobians w.r.t. image coordinates.
++  * Used in Jacobian mode for backpropagating through the transform.
++  */
++  torch::Tensor EvaluateMovingImagesPatchValuesAndJacobians(
++    const FixedImagePointType & fixedImageCenterCoordinate,
++    torch::Tensor & movingImagesPatchesJacobians,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize, int s) const;
++
++  /**
++    * Given a list of fixed points and model configurations, generates valid patch indices
++    * and filters out invalid points (outside mask/boundary). Returns filtered fixed points.
++    */
++  template <typename ImagePointType>
++  std::vector<ImagePointType> GeneratePatchIndex(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPointsTmp,
++    std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex) const;
++  
++  /** TorchScript model configurations for fixed and moving image feature extraction. */
++  std::vector<ModelConfiguration>   m_FixedModelsConfiguration;
++  std::vector<ModelConfiguration>   m_MovingModelsConfiguration;
++
++  std::vector<unsigned int>         m_SubsetFeatures;
++  std::vector<unsigned int>         m_PCA;
++  std::vector<float>                m_LayersWeight;
++  std::vector<std::string>          m_Distance;
++  int                               m_FeaturesMapUpdateInterval;
++  std::string                       m_Mode;
++  bool                              m_WriteFeatureMaps;
++  std::string                       m_FeatureMapsPath;
++  torch::Device                     m_GPU = torch::Device(torch::kCPU);
++  unsigned int m_CurrentLevel;
++
++  std::vector<FeaturesMaps> fixedFeaturesMaps;
++  std::vector<FeaturesMaps> movingFeaturesMaps;
++  std::vector<torch::Tensor> principal_components;
++  
++  std::vector<std::vector<int>> features_indexes;
++
++  /** Internal state to ensure lazy initialization only once. */
++  mutable bool m_init = false;
++
++  /** Random generator used to shuffle selected feature indices. */
++  mutable std::default_random_engine g;
++  
++  /**
++    * Interpolator for fixed image intensity values, set once at initialization.
++    * Uses 3rd-order B-spline interpolation.
++    */
++  InterpolatorPointer fixedInterpolator = [this] {
++    const auto interpolator = FixedInterpolatorType::New();
++    interpolator->SetSplineOrder(3);
++    return interpolator;
++  }();
++
++  /** Thread-safe wrapper for per-thread loss computation (padded to avoid false sharing). */
++  itkPadStruct(ITK_CACHE_LINE_ALIGNMENT,
++               LossPerThreadStruct,
++               PaddedLossPerThreadStruct);
++               
++  itkAlignedTypedef(ITK_CACHE_LINE_ALIGNMENT,
++                    PaddedLossPerThreadStruct,
++                    AlignedLossPerThreadStruct);
++
++  /** Per-thread loss structures, dynamically allocated during initialization. */
++  mutable std::unique_ptr<AlignedLossPerThreadStruct[]> m_LossThreadStruct{
++     nullptr
++   };
++
++   mutable int m_LossThreadStructSize = 0;
++   
++  
++};
++
++} // end namespace itk
++
++#ifndef ITK_MANUAL_INSTANTIATION
++#  include "itkImpactImageToImageMetric.hxx"
++#endif
++
++#endif // end #ifndef itkImpactImageToImageMetric_h
+diff --git a/Components/Metrics/Impact/itkImpactImageToImageMetric.hxx b/Components/Metrics/Impact/itkImpactImageToImageMetric.hxx
+new file mode 100755
+index 00000000..37994c9b
+--- /dev/null
++++ b/Components/Metrics/Impact/itkImpactImageToImageMetric.hxx
+@@ -0,0 +1,937 @@
++/*=========================================================================
++ *
++ *  Copyright UMC Utrecht and contributors
++ *
++ *  Licensed under the Apache License, Version 2.0 (the "License");
++ *  you may not use this file except in compliance with the License.
++ *  You may obtain a copy of the License at
++ *
++ *        http://www.apache.org/licenses/LICENSE-2.0.txt
++ *
++ *  Unless required by applicable law or agreed to in writing, software
++ *  distributed under the License is distributed on an "AS IS" BASIS,
++ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ *  See the License for the specific language governing permissions and
++ *  limitations under the License.
++ *
++ *=========================================================================*/
++
++#ifndef _itkImpactImageToImageMetric_hxx
++#define _itkImpactImageToImageMetric_hxx
++
++#include "itkImpactImageToImageMetric.h"
++#include <vector>
++
++#include "itkImageFileReader.h"
++#include "itkImageFileWriter.h"
++#include "itkLinearInterpolateImageFunction.h"
++#include "itkResampleImageFilter.h"
++#include "itkScaleTransform.h"
++
++namespace itk
++{
++
++/**
++ * ******************* Constructor *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ImpactImageToImageMetric()
++{
++  this->Superclass::SetUseImageSampler(true);
++  this->SetUseFixedImageLimiter(false);
++  this->SetUseMovingImageLimiter(false);
++} 
++
++/**
++ * ********************* UpdateFeaturesMaps ****************************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::UpdateFeaturesMaps()
++{
++  this->fixedFeaturesMaps.clear();
++  this->movingFeaturesMaps.clear();
++  this->principal_components.clear();
++
++  std::function<typename TMovingImage::PointType(const typename TMovingImage::PointType&)>(
++    [this](const typename TMovingImage::PointType& point) {
++        return this->TransformPoint(point);
++    });
++
++  auto movingWriter = std::function<void(typename TMovingImage::ConstPointer, torch::Tensor &, const std::string&)>(
++    [this](typename TMovingImage::ConstPointer image, torch::Tensor & data, const std::string& filename) {
++    unsigned int level = this->GetCurrentLevel();
++    using WriterType = itk::ImageFileWriter<FeaturesImageType>;
++    typename WriterType::Pointer writer = WriterType::New();
++    writer->SetFileName(this->GetFeatureMapsPath()+"/Moving_"+std::to_string(level)+"_"+filename+".mha");
++    writer->SetInput(ImpactTensorUtils::TensorToImage<TMovingImage, FeaturesImageType>(image, data.unsqueeze(0)));
++    try {
++      writer->Update();
++    } catch (itk::ExceptionObject &error) {
++      itkGenericExceptionMacro("Error writing image file: " << writer->GetFileName() << "ITK Exception: " << error);
++    }
++  });
++
++  auto fixedWriter = std::function<void(typename TFixedImage::ConstPointer, torch::Tensor &, const std::string&)>(
++    [this](typename TFixedImage::ConstPointer image, torch::Tensor & data, const std::string& filename) {
++    unsigned int level = this->GetCurrentLevel();
++    using WriterType = itk::ImageFileWriter<FeaturesImageType>;
++    typename WriterType::Pointer writer = WriterType::New();
++    writer->SetFileName(this->GetFeatureMapsPath()+"/Fixed_"+std::to_string(level)+"_"+filename+".mha");
++    writer->SetInput(ImpactTensorUtils::TensorToImage<TFixedImage, FeaturesImageType>(image, data.unsqueeze(0)));
++    try {
++      writer->Update();
++    } catch (itk::ExceptionObject &error) {
++      itkGenericExceptionMacro("Error writing image file: " << writer->GetFileName() << "ITK Exception: " << error);
++    }
++  });
++
++  this->movingFeaturesMaps = ImpactTensorUtils::GetFeaturesMaps<
++          TMovingImage, FeaturesMaps, InterpolatorType, ModelConfiguration, FeaturesImageType>(
++          Superclass::m_MovingImage,
++          Superclass::m_Interpolator,
++          this->GetMovingModelsConfiguration(),
++          this->GetGPU(),
++          this->GetPCA(),
++          this->principal_components,
++          this->GetWriteFeatureMaps() ? movingWriter : nullptr 
++      );
++ 
++  this->fixedFeaturesMaps = ImpactTensorUtils::GetFeaturesMaps<
++          TFixedImage, FeaturesMaps, InterpolatorType, ModelConfiguration, FeaturesImageType>(
++          Superclass::m_FixedImage,
++          this->fixedInterpolator,
++          this->GetFixedModelsConfiguration(),
++          this->GetGPU(),
++          this->GetPCA(),
++          this->principal_components,
++          this->GetWriteFeatureMaps() ? fixedWriter : nullptr 
++      );
++
++  if (this->GetWriteFeatureMaps()){
++    unsigned int level = this->GetCurrentLevel();
++    using WriterType = itk::ImageFileWriter<FeaturesImageType>;
++    for(int i = 0; i < movingFeaturesMaps.size(); i++){
++      typename WriterType::Pointer writer = WriterType::New();
++
++      writer->SetFileName(this->GetFeatureMapsPath()+"/Moving_"+std::to_string(level) + "_" + std::to_string(i) + ".mha");
++      writer->SetInput(this->movingFeaturesMaps[i].m_featuresMaps);
++      try {
++          writer->Update();
++      } catch (itk::ExceptionObject &error) {
++      }
++    }
++    for(int i = 0; i < fixedFeaturesMaps.size(); i++){
++      typename WriterType::Pointer writer = WriterType::New();
++
++      writer->SetFileName(this->GetFeatureMapsPath()+"/Fixed_"+std::to_string(level) + "_" + std::to_string(i) + ".mha");
++      writer->SetInput(this->fixedFeaturesMaps[i].m_featuresMaps);
++      try {
++          writer->Update();
++      } catch (itk::ExceptionObject &error) {
++      }
++    }
++  }
++} // end UpdateFeaturesMaps
++
++/**
++ * ********************* UpdateMovingFeaturesMaps ****************************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::UpdateMovingFeaturesMaps()
++{
++  auto movingWriter = std::function<void(typename TMovingImage::ConstPointer, torch::Tensor &, const std::string&)>(
++    [this](typename TMovingImage::ConstPointer image, torch::Tensor & data, const std::string& filename) {
++    unsigned int level = this->GetCurrentLevel();
++    using WriterType = itk::ImageFileWriter<FeaturesImageType>;
++    typename WriterType::Pointer writer = WriterType::New();
++    writer->SetFileName(this->GetFeatureMapsPath()+"/Moving_"+std::to_string(level)+"_"+filename+".mha");
++    writer->SetInput(ImpactTensorUtils::TensorToImage<TMovingImage, FeaturesImageType>(image, data.unsqueeze(0)));
++    try {
++      writer->Update();
++    } catch (itk::ExceptionObject &error) {
++      itkGenericExceptionMacro("Error writing image file: " << writer->GetFileName() << "ITK Exception: " << error);
++    }
++  });
++
++  this->movingFeaturesMaps.clear();
++  this->movingFeaturesMaps = ImpactTensorUtils::GetFeaturesMaps<
++          TMovingImage, FeaturesMaps, InterpolatorType, ModelConfiguration, FeaturesImageType>(
++          Superclass::m_MovingImage,
++          Superclass::m_Interpolator,
++          this->GetMovingModelsConfiguration(),
++          this->GetGPU(),
++          this->GetPCA(),
++          this->principal_components,
++          this->GetWriteFeatureMaps() ? movingWriter : nullptr ,
++          std::function<typename TMovingImage::PointType(const typename TMovingImage::PointType&)>(
++            [this](const typename TMovingImage::PointType& point) {
++                return this->TransformPoint(point);
++            })
++      );
++  
++  using WriterType = itk::ImageFileWriter<FeaturesImageType>;
++  if (this->GetWriteFeatureMaps()){
++    unsigned int level = this->GetCurrentLevel();
++    
++    for(int i = 0; i < movingFeaturesMaps.size(); i++){
++      typename WriterType::Pointer writer = WriterType::New();
++
++      writer->SetFileName(this->GetFeatureMapsPath()+"/Moving_"+std::to_string(level) + "_" + std::to_string(i) + ".mha");
++      writer->SetInput(this->movingFeaturesMaps[i].m_featuresMaps);
++      try {
++          writer->Update();
++      } catch (itk::ExceptionObject &error) {
++      }
++    }
++  }
++} // end UpdateMovingFeaturesMaps
++
++/**
++ * ********************* Initialize ****************************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::Initialize()
++{ 
++  /** Initialize transform, interpolator, etc. */
++  Superclass::Initialize();
++  this->fixedInterpolator->SetInputImage(Superclass::m_FixedImage);
++  this->features_indexes.clear();
++
++  if (this->GetMode() == "Static") {
++    this->UpdateFeaturesMaps();
++
++    if (this->fixedFeaturesMaps.size() != this->movingFeaturesMaps.size()) {
++        itkExceptionMacro("Mismatch in number of feature maps: "
++                          << "fixedFeaturesMaps.size() = " << this->fixedFeaturesMaps.size()
++                          << ", movingFeaturesMaps.size() = " << this->movingFeaturesMaps.size());
++    }
++
++    for (size_t i = 0; i < this->fixedFeaturesMaps.size(); ++i) {
++        if (this->fixedFeaturesMaps[i].m_featuresMaps->GetNumberOfComponentsPerPixel() != 
++            this->movingFeaturesMaps[i].m_featuresMaps->GetNumberOfComponentsPerPixel()) {
++            itkExceptionMacro("Mismatch in number of components per feature map at layer " << i
++                              << ": fixed = " << this->fixedFeaturesMaps[i].m_featuresMaps->GetNumberOfComponentsPerPixel()
++                              << ", moving = " << this->movingFeaturesMaps[i].m_featuresMaps->GetNumberOfComponentsPerPixel());
++        }
++    }
++    
++    for (size_t i = 0; i < this->fixedFeaturesMaps.size(); ++i) {
++      int numComponents = this->fixedFeaturesMaps[i].m_featuresMaps->GetNumberOfComponentsPerPixel();
++      this->m_SubsetFeatures[i] = std::clamp<unsigned int>(this->GetSubsetFeatures()[i], 1, numComponents);
++      this->features_indexes.push_back(std::vector<int>(this->m_SubsetFeatures[i]));
++      std::iota(this->features_indexes[i].begin(), this->features_indexes[i].end(), 0);
++    }
++  } else {
++    std::vector<torch::Tensor> fixedOutputsTensor = ImpactTensorUtils::GetModelOutputsExample<ModelConfiguration>(this->m_FixedModelsConfiguration, "fixed", this->GetGPU());
++    std::vector<torch::Tensor> movingOutputsTensor = ImpactTensorUtils::GetModelOutputsExample<ModelConfiguration>(this->m_MovingModelsConfiguration, "moving", this->GetGPU());
++    
++    if (fixedOutputsTensor.size() != movingOutputsTensor.size()) {
++      itkExceptionMacro("Mismatch in number of feature maps: "
++                        << "fixed = " << fixedOutputsTensor.size()
++                        << ", moving = " << movingOutputsTensor.size());
++    }
++
++    for (size_t i = 0; i < fixedOutputsTensor.size(); ++i) {
++        if (fixedOutputsTensor[i].size(0) != movingOutputsTensor[i].size(0)) {
++            itkExceptionMacro("Mismatch in number of components per feature map at layer " << i
++                              << ": fixed = " << fixedOutputsTensor[i].size(0)
++                              << ", moving = " << movingOutputsTensor[i].size(0));
++        }
++    }
++
++    for (size_t i = 0; i < fixedOutputsTensor.size(); ++i) {
++        int numComponents = fixedOutputsTensor[i].size(1);
++        this->m_SubsetFeatures[i] = std::clamp<unsigned int>(this->m_SubsetFeatures[i], 1, numComponents);
++        this->features_indexes.push_back(std::vector<int>(this->m_SubsetFeatures[i]));
++        std::iota(this->features_indexes[i].begin(), this->features_indexes[i].end(), 0);
++    }
++  }
++} // end Initialize
++
++/**
++ * ******************* SampleCheck *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++bool
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::SampleCheck(const FixedImagePointType & fixedImageCenterCoordinate) const
++{
++  FixedImagePointType fixedImagePoint(fixedImageCenterCoordinate);
++  MovingImagePointType mappedPoint;
++  mappedPoint = this->TransformPoint(fixedImagePoint);
++  if (Superclass::m_Interpolator->IsInsideBuffer(mappedPoint) == false){
++    return false;
++  } else {
++    if (const auto * const mask = this->GetMovingImageMask())
++    {
++      if (mask->IsInsideInWorldSpace(mappedPoint) == false){
++        return false;
++      }
++    }
++  }
++  return true;
++} // end SampleCheck
++
++/**
++ * ******************* SampleCheck *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++bool
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::SampleCheck(const FixedImagePointType & fixedImageCenterCoordinate, const std::vector<std::vector<float>> & patchIndex) const
++{
++  FixedImagePointType fixedImagePoint(fixedImageCenterCoordinate);
++  MovingImagePointType mappedPoint;
++  for (int64_t i = 0; i < patchIndex.size(); ++i){
++    for (int64_t dim = 0; dim < patchIndex[i].size(); ++dim){
++      fixedImagePoint[dim] = fixedImageCenterCoordinate[dim]+patchIndex[i][dim];
++    }
++    mappedPoint = this->TransformPoint(fixedImagePoint);
++    if (Superclass::m_Interpolator->IsInsideBuffer(mappedPoint) == false){
++      return false;
++    } else {
++      if (const auto * const mask = this->GetMovingImageMask())
++      {
++        if (mask->IsInsideInWorldSpace(mappedPoint) == false){
++          return false;
++        }
++      }
++    }
++  }
++  return true;
++} // end SampleCheck
++
++/**
++ * ******************* GeneratePatchIndex *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++template <typename ImagePointType> 
++std::vector<ImagePointType> ImpactImageToImageMetric<TFixedImage, TMovingImage>::GeneratePatchIndex(
++    const std::vector<ModelConfiguration>& modelConfig,
++    const std::vector<ImagePointType>& fixedPointsTmp,
++    std::vector<std::vector<std::vector<std::vector<float>>>>& patchIndex) const {
++    
++    std::vector<ImagePointType> fixedPoints;
++    
++    std::vector<bool> pointsMask(fixedPointsTmp.size(), true);
++    for (size_t i = 0; i < modelConfig.size(); ++i) {
++        patchIndex[i] = std::vector<std::vector<std::vector<float>>>();
++        for (size_t it = 0; it < fixedPointsTmp.size(); ++it) {
++            std::vector<std::vector<float>> patch = ImpactTensorUtils::GetPatchIndex<ModelConfiguration>(modelConfig[i], FixedImageDimension);
++            if (this->SampleCheck(fixedPointsTmp[it], patch)) {
++                patchIndex[i].push_back(patch);
++            } else {
++                pointsMask[it] = false;
++            }
++        }
++    }
++    for(int it = 0; it < fixedPointsTmp.size(); it++){
++      if(pointsMask[it]){
++        fixedPoints.push_back(fixedPointsTmp[it]); 
++      }
++    }
++    return fixedPoints;
++} // end GeneratePatchIndex
++
++/**
++ * ******************* EvaluateFixedImagesPatchValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++torch::Tensor
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::EvaluateFixedImagesPatchValue(
++    const FixedImagePointType & fixedImageCenterCoordinate,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize) const{
++    std::vector<float> fixedImagesPatchValues(patchIndex.size(), 0.0f);
++
++    FixedImagePointType fixedImagePoint(fixedImageCenterCoordinate);
++    for (int64_t i = 0; i < patchIndex.size(); ++i) {
++        for (int64_t dim = 0; dim < patchIndex[i].size(); ++dim){
++          fixedImagePoint[dim] = fixedImageCenterCoordinate[dim]+patchIndex[i][dim];
++        }
++        fixedImagesPatchValues[i] = this->fixedInterpolator->Evaluate(fixedImagePoint);
++    }
++    return torch::from_blob(fixedImagesPatchValues.data(), {torch::IntArrayRef(patchSize)}, torch::kFloat).unsqueeze(0).clone();
++} // end EvaluateFixedImagesPatchValue
++
++/**
++ * ******************* EvaluateFixedPatchValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++torch::Tensor
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::EvaluateMovingImagesPatchValue(
++    const FixedImagePointType & fixedImageCenterCoordinate,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize) const{
++    std::vector<float> movingImagesPatchValues(patchIndex.size(), 0.0f);
++    RealType movingImageValue;
++    
++    FixedImagePointType fixedImagePoint(fixedImageCenterCoordinate);
++    for (int64_t i = 0; i < patchIndex.size(); ++i) {
++        for (int64_t dim = 0; dim < patchIndex[i].size(); ++dim){
++          fixedImagePoint[dim] = fixedImageCenterCoordinate[dim]+patchIndex[i][dim];
++        }
++        this->Superclass::EvaluateMovingImageValueAndDerivative(this->TransformPoint(fixedImagePoint), movingImageValue, nullptr);
++        movingImagesPatchValues[i] = movingImageValue;
++    }
++    return torch::from_blob(movingImagesPatchValues.data(), {torch::IntArrayRef(patchSize)}, torch::kFloat).clone().unsqueeze(0);
++} // end EvaluateFixedPatchValue
++
++/**
++ * ******************* EvaluateMovingPatchValueAndDerivative *******************
++ */    
++template <typename TFixedImage, typename TMovingImage>
++torch::Tensor
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::EvaluateMovingImagesPatchValuesAndJacobians(
++    const FixedImagePointType & fixedImageCenterCoordinate,
++    torch::Tensor & movingImagesPatchesJacobians,
++    const std::vector<std::vector<float>> & patchIndex,
++    const std::vector<long> & patchSize,
++    int s) const{
++
++    std::vector<float> movingImagesPatchValues(patchIndex.size(), 0.0f);
++    std::vector<float> movingImagesPatchJacobians(patchIndex.size()*MovingImageDimension, 0.0f);
++
++    RealType movingImageValue;
++    MovingImageDerivativeType movingImageJacobian;
++    
++    FixedImagePointType fixedImagePoint(fixedImageCenterCoordinate);
++    for (int64_t i = 0; i < patchIndex.size(); ++i) {
++        for (int64_t dim = 0; dim < patchIndex[i].size(); ++dim){
++          fixedImagePoint[dim] = fixedImageCenterCoordinate[dim]+patchIndex[i][dim];
++        }
++        this->Superclass::EvaluateMovingImageValueAndDerivative(this->TransformPoint(fixedImagePoint), movingImageValue, &movingImageJacobian);
++        movingImagesPatchValues[i] = movingImageValue;
++        for (unsigned int it = 0; it < MovingImageDimension; ++it){
++          movingImagesPatchJacobians[i*MovingImageDimension+it] = static_cast<float>(movingImageJacobian[it]);
++        }
++    }
++    movingImagesPatchesJacobians[s] = torch::from_blob(movingImagesPatchJacobians.data(), {static_cast<long>(patchIndex.size()), MovingImageDimension}, torch::kFloat).clone();
++    return torch::from_blob(movingImagesPatchValues.data(), {torch::IntArrayRef(patchSize)}, torch::kFloat).unsqueeze(0).clone();
++} // end EvaluateMovingPatchValueAndDerivative
++
++
++/**
++ * ******************* ComputeValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++unsigned int
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValue(
++  const std::vector<FixedImagePointType> & fixedPointsTmp,
++  std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const
++  {
++  std::vector<std::vector<std::vector<std::vector<float>>>> patchIndex(this->GetFixedModelsConfiguration().size());
++  std::vector<FixedImagePointType> fixedPoints = this->GeneratePatchIndex<FixedImagePointType>(this->GetFixedModelsConfiguration(), fixedPointsTmp, patchIndex); 
++  if (fixedPoints.empty()) {
++    return 0;
++  }
++  unsigned int nb_sample = fixedPoints.size();
++  std::vector<torch::Tensor> fixedOutputsTensor, movingOutputsTensor;
++  
++  std::vector<torch::Tensor> subsetsOfFeatures(this->features_indexes.size());
++
++  for(int i = 0; i < this->features_indexes.size(); i++){
++    std::vector<int> features_index = this->features_indexes[i];
++    std::shuffle(features_index.begin(), features_index.end(), this->g);
++    std::vector<int> subsetOfFeatures(features_index.begin(), features_index.begin() + this->GetSubsetFeatures()[i]);
++    subsetsOfFeatures[i] = torch::tensor(subsetOfFeatures, torch::kInt64).to(this->GetGPU());
++  }
++  
++  fixedOutputsTensor = ImpactTensorUtils::GenerateOutputs<ModelConfiguration, FixedImagePointType>(
++        this->GetFixedModelsConfiguration(),
++        fixedPoints,
++        patchIndex,
++        subsetsOfFeatures,
++        this->GetGPU(),
++        std::function<typename torch::Tensor(const FixedImagePointType&, const std::vector<std::vector<float>>&, const std::vector<long> &)>(
++                [this](const FixedImagePointType& fixedImageCenterCoordinateLoc, const std::vector<std::vector<float>>& patchIndexLoc, const std::vector<long> & patchSizeLoc) {
++                    return this->EvaluateFixedImagesPatchValue(fixedImageCenterCoordinateLoc, patchIndexLoc, patchSizeLoc);
++                }));
++
++  movingOutputsTensor = ImpactTensorUtils::GenerateOutputs<ModelConfiguration, MovingImagePointType>(
++        this->GetMovingModelsConfiguration(),
++        fixedPoints,
++        patchIndex,
++        subsetsOfFeatures,
++        this->GetGPU(),
++        std::function<typename torch::Tensor(const MovingImagePointType&, const std::vector<std::vector<float>>&, const std::vector<long> &)>(
++                [this](const MovingImagePointType& fixedImageCenterCoordinateLoc, const std::vector<std::vector<float>>& patchIndexLoc, const std::vector<long> & patchSizeLoc) {
++                    return this->EvaluateMovingImagesPatchValue(fixedImageCenterCoordinateLoc, patchIndexLoc, patchSizeLoc);
++                }));
++
++  for (size_t i = 0; i < fixedOutputsTensor.size(); ++i) {
++    losses[i]->updateValue(fixedOutputsTensor[i], movingOutputsTensor[i]);
++  }
++  return nb_sample;
++} // end ComputeValue
++
++/**
++ * ******************* ComputeValueStatic *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++unsigned int
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueStatic(
++  const std::vector<FixedImagePointType> & fixedPointsTmp,
++  std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const
++  {
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(fixedPointsTmp.size());
++  for(FixedImagePointType fixedPoint : fixedPointsTmp){
++    if (this->SampleCheck(fixedPoint)){
++      fixedPoints.push_back(fixedPoint);
++    }
++  }
++  if (fixedPoints.empty()) {
++    return 0;
++  }
++  unsigned int nb_sample = fixedPoints.size();
++  for(int i = 0; i < this->fixedFeaturesMaps.size(); i++){
++    std::vector<int> features_index = this->features_indexes[i];
++    std::shuffle(features_index.begin(), features_index.end(), this->g);
++    std::vector<int> subsetOfFeatures(features_index.begin(), features_index.begin() + this->GetSubsetFeatures()[i]);
++    
++    torch::Tensor fixedOutputTensor = torch::zeros({nb_sample, this->GetSubsetFeatures()[i]});
++    torch::Tensor movingOutputTensor = torch::zeros({nb_sample, this->GetSubsetFeatures()[i]});
++    for (size_t s = 0; s < nb_sample; ++s) {
++      const auto& fixedPoint = fixedPoints[s];
++      fixedOutputTensor[s] = this->fixedFeaturesMaps[i].m_featuresMapsInterpolator.Evaluate(fixedPoint, subsetOfFeatures);
++      movingOutputTensor[s] = this->movingFeaturesMaps[i].m_featuresMapsInterpolator.Evaluate(this->TransformPoint(fixedPoint), subsetOfFeatures);
++      }
++      losses[i]->updateValue(fixedOutputTensor, movingOutputTensor); 
++  }
++  return nb_sample;
++} // end ComputeValueStatic
++
++/**
++ * ******************* ComputeValueAndDerivativeJacobian *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++unsigned int
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeJacobian(
++  const std::vector<FixedImagePointType> & fixedPointsTmp,
++  std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const
++{
++
++  std::vector<std::vector<std::vector<std::vector<float>>>> patchIndex(this->GetFixedModelsConfiguration().size());
++  std::vector<FixedImagePointType> fixedPoints = this->GeneratePatchIndex<FixedImagePointType>(this->GetFixedModelsConfiguration(), fixedPointsTmp, patchIndex); 
++  if (fixedPoints.empty()) {
++    return 0;
++  }
++  unsigned int nb_sample = fixedPoints.size();
++  const int numNonZeroJacobianIndices = this->m_AdvancedTransform->GetNumberOfNonZeroJacobianIndices();
++  torch::Tensor nonZeroJacobianIndices = torch::zeros({nb_sample, numNonZeroJacobianIndices}, torch::kLong);
++  torch::Tensor transformsJacobian = torch::zeros(
++        {nb_sample, MovingImageDimension, static_cast<int64_t>(numNonZeroJacobianIndices)}, torch::kFloat);
++  
++  TransformJacobianType flatTransformJacobian;
++  NonZeroJacobianIndicesType flatNonZeroJacobianIndices(numNonZeroJacobianIndices);
++    
++  for (size_t s = 0; s < nb_sample; s++){
++    this->m_AdvancedTransform->GetJacobian(fixedPoints[s], flatTransformJacobian, flatNonZeroJacobianIndices);
++    nonZeroJacobianIndices[s] = torch::from_blob(flatNonZeroJacobianIndices.data(), {numNonZeroJacobianIndices}, torch::kLong).clone();
++    transformsJacobian[s] = torch::from_blob(
++                                    &(*flatTransformJacobian.begin()), 
++                                    {MovingImageDimension, numNonZeroJacobianIndices}, 
++                                    torch::kDouble).to(torch::kFloat)
++                                    .clone();
++  }
++  transformsJacobian = transformsJacobian.to(this->GetGPU());
++  nonZeroJacobianIndices = nonZeroJacobianIndices.to(this->GetGPU());
++  std::vector<torch::Tensor> subsetsOfFeatures(this->features_indexes.size());
++
++  for(int i = 0; i < this->features_indexes.size(); i++){
++    std::vector<int> features_index = this->features_indexes[i];
++    std::shuffle(features_index.begin(), features_index.end(), this->g);
++    std::vector<int> subsetOfFeatures(features_index.begin(), features_index.begin() + this->GetSubsetFeatures()[i]);
++    subsetsOfFeatures[i] = torch::tensor(subsetOfFeatures, torch::kInt64).to(this->GetGPU());
++  };
++
++  std::vector<torch::Tensor> fixedOutputsTensor, movingOutputsTensor;
++  fixedOutputsTensor = ImpactTensorUtils::GenerateOutputs<ModelConfiguration, FixedImagePointType>(
++        this->GetFixedModelsConfiguration(),
++        fixedPoints,
++        patchIndex,
++        subsetsOfFeatures,
++        this->GetGPU(),
++        std::function<typename torch::Tensor(const FixedImagePointType&, const std::vector<std::vector<float>>&, const std::vector<long> &)>(
++                [this](const FixedImagePointType& fixedImageCenterCoordinateLoc, const std::vector<std::vector<float>>& patchIndexLoc, const std::vector<long> & patchSizeLoc) {
++                    return this->EvaluateFixedImagesPatchValue(fixedImageCenterCoordinateLoc, patchIndexLoc, patchSizeLoc);
++                }));
++
++    std::vector<torch::Tensor> layersJacobian = ImpactTensorUtils::GenerateOutputsAndJacobian<ModelConfiguration, MovingImagePointType>(
++      this->GetMovingModelsConfiguration(),
++      fixedPoints,
++      patchIndex,
++      subsetsOfFeatures,
++      fixedOutputsTensor,
++      this->GetGPU(),
++      losses,
++      std::function<typename torch::Tensor(const MovingImagePointType&, torch::Tensor &, const std::vector<std::vector<float>>&, const std::vector<long> &, int)>(
++              [this](const MovingImagePointType& fixedImageCenterCoordinateLoc, torch::Tensor & movingImagesPatchesJacobiansLoc, const std::vector<std::vector<float>>& patchIndexLoc, const std::vector<long> & patchSizeLoc, int sLoc) {
++                  return this->EvaluateMovingImagesPatchValuesAndJacobians(fixedImageCenterCoordinateLoc, movingImagesPatchesJacobiansLoc, patchIndexLoc, patchSizeLoc, sLoc);
++              }));
++  
++  for (size_t i = 0; i < fixedOutputsTensor.size(); i++) {
++    torch::Tensor jacobian = torch::bmm(layersJacobian[i], transformsJacobian);
++    losses[i]->updateDerivativeInJacobianMode(jacobian, nonZeroJacobianIndices);
++  }
++  return nb_sample;
++} // end ComputeValueAndDerivativeJacobian
++
++/**
++ * ******************* ComputeValueAndDerivativeStatic *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++unsigned int
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeStatic(
++  const std::vector<FixedImagePointType> & fixedPointsTmp,
++  std::vector<std::unique_ptr<ImpactLoss::Loss>> & losses) const
++{
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(fixedPointsTmp.size());
++  for(FixedImagePointType fixedPoint : fixedPointsTmp){
++    if (this->SampleCheck(fixedPoint)){
++      fixedPoints.push_back(fixedPoint);
++    }
++  }
++  if (fixedPoints.empty()) {
++    return 0;
++  }
++  unsigned int nb_sample = fixedPoints.size();
++  const int numNonZeroJacobianIndices = this->m_AdvancedTransform->GetNumberOfNonZeroJacobianIndices();
++  torch::Tensor nonZeroJacobianIndices = torch::zeros({nb_sample, numNonZeroJacobianIndices}, torch::kLong);
++
++  torch::Tensor transformsJacobian = torch::zeros(
++        {nb_sample, MovingImageDimension, static_cast<int64_t>(numNonZeroJacobianIndices)}, torch::kFloat);
++  
++  TransformJacobianType flatTransformJacobian;
++  NonZeroJacobianIndicesType flatNonZeroJacobianIndices(numNonZeroJacobianIndices);
++  for (size_t s = 0; s < nb_sample; s++){
++    this->m_AdvancedTransform->GetJacobian(fixedPoints[s], flatTransformJacobian, flatNonZeroJacobianIndices);
++    nonZeroJacobianIndices[s] = torch::from_blob(flatNonZeroJacobianIndices.data(), {numNonZeroJacobianIndices}, torch::kLong).clone();
++    transformsJacobian[s] = torch::from_blob(
++                                    &(*flatTransformJacobian.begin()), 
++                                    {MovingImageDimension, numNonZeroJacobianIndices}, 
++                                    torch::kDouble).to(torch::kFloat)
++                                    .clone();
++  }
++
++
++  for (size_t i = 0; i < this->fixedFeaturesMaps.size(); ++i) {
++    std::vector<int> features_index = this->features_indexes[i];
++    std::shuffle(features_index.begin(), features_index.end(), this->g);
++    std::vector<int> subsetOfFeatures(features_index.begin(),
++                                          features_index.begin() + this->GetSubsetFeatures()[i]);
++ 
++    torch::Tensor functionJacobian;
++    
++    MovingImagePointType mappedPoint;
++    torch::Tensor fixedOutputTensor = torch::zeros({nb_sample, this->GetSubsetFeatures()[i]}, torch::kFloat);
++    torch::Tensor movingOutputTensor = torch::zeros({nb_sample, this->GetSubsetFeatures()[i]}, torch::kFloat);
++    torch::Tensor movingDerivativeTensor = torch::zeros({nb_sample, this->GetSubsetFeatures()[i], MovingImageDimension}, torch::kFloat);
++    for (size_t s = 0; s < nb_sample; ++s) {
++      const auto& fixedPoint = fixedPoints[s];
++      mappedPoint = this->TransformPoint(fixedPoint);
++      fixedOutputTensor[s] = this->fixedFeaturesMaps[i].m_featuresMapsInterpolator.Evaluate(fixedPoint, subsetOfFeatures);
++      movingOutputTensor[s] = this->movingFeaturesMaps[i].m_featuresMapsInterpolator.Evaluate(mappedPoint, subsetOfFeatures);
++      movingDerivativeTensor[s] = this->movingFeaturesMaps[i].m_featuresMapsInterpolator.EvaluateDerivative(mappedPoint, subsetOfFeatures);
++    }
++    torch::Tensor jacobian = torch::bmm(movingDerivativeTensor, transformsJacobian);
++    losses[i]->updateValueAndDerivativeInStaticMode(fixedOutputTensor, movingOutputTensor, jacobian, nonZeroJacobianIndices);
++  }
++  return nb_sample;
++} // end ComputeValueAndDerivativeStatic
++
++/**
++ * ******************* InitializeThreadingParameters *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::InitializeThreadingParameters() const
++{
++  const ThreadIdType numberOfThreads = Self::GetNumberOfWorkUnits();
++
++  /** Resize and initialize the threading related parameters.
++   * The SetSize() functions do not resize the data when this is not
++   * needed, which saves valuable re-allocation time.
++   * Filling the potentially large vectors is performed later, in each thread,
++   * which has performance benefits for larger vector sizes.
++   */
++
++  /** Only resize the array of structs when needed. */
++  //if (this->m_GetValueAndDerivativePerThreadVariablesSize != numberOfThreads){  
++  if (this->m_LossThreadStructSize != numberOfThreads){  
++    this->m_LossThreadStruct.reset(new AlignedLossPerThreadStruct[numberOfThreads]);
++
++    for(int i = 0; i < numberOfThreads; i++){
++      this->m_LossThreadStruct[i].init(this->GetDistance(), this->GetLayersWeight());
++    }
++    this->m_LossThreadStructSize = numberOfThreads;
++  }
++  const int nb_parameters = this->GetNumberOfParameters();
++  for(int i = 0; i < numberOfThreads; i++){
++    this->m_LossThreadStruct[i].set_nb_parameters(nb_parameters);
++  }
++
++} // end InitializeThreadingParameters
++
++/**
++ * ******************* GetValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++auto
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::GetValue(
++  const ParametersType & parameters) const -> MeasureType
++{
++  if (!this->m_UseMultiThread)
++  {
++    return this->GetValueSingleThreaded(parameters);
++  }
++  this->BeforeThreadedGetValueAndDerivative(parameters);
++  this->LaunchGetValueThreaderCallback();
++  MeasureType value{};
++  this->AfterThreadedGetValue(value);
++  return value;
++} // end GetValue
++
++/**
++ * ******************* GetValueSingleThreaded *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++auto
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::GetValueSingleThreaded(
++  const ParametersType & parameters) const -> MeasureType
++{
++  this->BeforeThreadedGetValueAndDerivative(parameters);
++  /** Initialize some variables. */
++  auto& loss = this->m_LossThreadStruct[0];
++  loss.reset();
++  
++  
++  /** Get a handle to the sample container. */
++  ImageSampleContainerPointer sampleContainer = this->GetImageSampler()->GetOutput();
++  const size_t sampleContainerSize = sampleContainer->size();
++
++  auto computeValueFunc = (this->GetMode() == "Static")
++                            ? &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueStatic
++                            : &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValue;
++
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(sampleContainerSize);
++  for (size_t i = 0; i < sampleContainerSize; i++) {
++    fixedPoints.push_back((*sampleContainer)[i].m_ImageCoordinates);
++  }
++  Superclass::m_NumberOfPixelsCounted = (this->*computeValueFunc)(fixedPoints, loss.m_losses);
++  this->CheckNumberOfSamples();
++  
++  return loss.GetValue();
++} // end GetValueSingleThreaded
++
++/**
++ * ******************* ThreadedGetValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ThreadedGetValue(ThreadIdType threadId) const
++{
++  /** Get a handle to the sample container. */
++  ImageSampleContainerPointer sampleContainer = this->GetImageSampler()->GetOutput();
++  const unsigned long         sampleContainerSize = sampleContainer->Size();
++
++  /** Get the samples for this thread. */
++  const unsigned long nrOfSamplesPerThreads = static_cast<unsigned long>(
++    std::ceil(static_cast<double>(sampleContainerSize) / static_cast<double>(Self::GetNumberOfWorkUnits())));
++
++  const auto pos_begin = std::min<size_t>(nrOfSamplesPerThreads * threadId, sampleContainerSize);
++  const auto pos_end = std::min<size_t>(nrOfSamplesPerThreads * (threadId + 1), sampleContainerSize);
++
++  /** Create iterator over the sample container. */
++  const auto beginOfSampleContainer = sampleContainer->cbegin();
++  const auto threader_fbegin = beginOfSampleContainer + pos_begin;
++  const auto threader_fend = beginOfSampleContainer + pos_end;
++
++  /** Create variables to store intermediate results. circumvent false sharing */
++
++  auto& loss = this->m_LossThreadStruct[threadId];
++  loss.reset();
++  auto computeValueFunc = (this->GetMode() == "Static")
++                            ? &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueStatic
++                            : &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValue;
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(nrOfSamplesPerThreads);
++  for (auto threader_fiter = threader_fbegin; threader_fiter != threader_fend; ++threader_fiter){
++      fixedPoints.push_back(threader_fiter->m_ImageCoordinates);  
++  }
++  loss.m_numberOfPixelsCounted += (this->*computeValueFunc)(fixedPoints, loss.m_losses);
++} // end ThreadedGetValue
++
++/**
++ * ******************* AfterThreadedGetValue *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::AfterThreadedGetValue(MeasureType & value) const
++{
++  auto& loss = this->m_LossThreadStruct[0];
++  for (ThreadIdType i = 1; i < Self::GetNumberOfWorkUnits(); ++i)
++  {
++    loss += this->m_LossThreadStruct[i];
++  }
++  Superclass::m_NumberOfPixelsCounted = loss.m_numberOfPixelsCounted;
++  /** Check if enough samples were valid. */
++  this->CheckNumberOfSamples();
++
++  /** Accumulate values. */
++  value = loss.GetValue();
++} // end AfterThreadedGetValue
++
++/**
++ * ******************* GetDerivative *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::GetDerivative(
++  const ParametersType & parameters,
++  DerivativeType &                derivative) const
++{ 
++  MeasureType dummyvalue{};
++  this->GetValueAndDerivative(parameters, dummyvalue, derivative);
++} // end GetDerivative
++
++
++/**
++ * ******************* GetValueAndDerivative *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::GetValueAndDerivative(
++  const ParametersType & parameters,
++  MeasureType &                   value,
++  DerivativeType &                derivative) const
++{
++
++  /** Option for now to still use the single threaded code. */
++  if (!this->m_UseMultiThread)
++  {
++    return this->GetValueAndDerivativeSingleThreaded(parameters, value, derivative);
++  }
++
++  this->BeforeThreadedGetValueAndDerivative(parameters);
++
++  /** Launch multi-threading metric */
++  this->LaunchGetValueAndDerivativeThreaderCallback();
++
++  /** Gather the metric values and derivatives from all threads. */
++  this->AfterThreadedGetValueAndDerivative(value, derivative);
++
++} // end GetValueAndDerivative
++
++/**
++ * ******************* GetValueAndDerivativeSingleThreaded *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::GetValueAndDerivativeSingleThreaded(
++  const ParametersType & parameters,
++  MeasureType &                   value,
++  DerivativeType &                derivative) const
++{
++
++  this->BeforeThreadedGetValueAndDerivative(parameters);
++  
++  /** Initialize some variables. */
++  auto& loss = this->m_LossThreadStruct[0];
++  loss.reset();
++  
++  /** Get a handle to the sample container. */
++  ImageSampleContainerPointer sampleContainer = this->GetImageSampler()->GetOutput();
++  const size_t sampleContainerSize = sampleContainer->size();
++
++  auto computeValueAndDerivativeFunc = [this](const std::string& mode) {
++    if (mode == "Jacobian") {
++        return &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeJacobian;
++    } else {
++        return &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeStatic;
++    }
++  }(this->GetMode());
++
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(sampleContainerSize);
++  for (size_t i = 0; i < sampleContainerSize; i ++) {
++    fixedPoints.push_back((*sampleContainer)[i].m_ImageCoordinates);
++  }
++  Superclass::m_NumberOfPixelsCounted = (this->*computeValueAndDerivativeFunc)(fixedPoints, loss.m_losses);
++  this->CheckNumberOfSamples();
++
++  value = loss.GetValue();
++  derivative = loss.GetDerivative();
++} // end GetValueAndDerivativeSingleThreaded
++
++/**
++ * ******************* ThreadedGetValueAndDerivative *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::ThreadedGetValueAndDerivative(
++  ThreadIdType threadId) const
++{
++  auto& loss = this->m_LossThreadStruct[threadId];
++  loss.reset();
++
++  /** Get a handle to the sample container. */
++  ImageSampleContainerPointer sampleContainer = this->GetImageSampler()->GetOutput();
++  const unsigned long         sampleContainerSize = sampleContainer->Size();
++  /** Get the samples for this thread. */
++  const unsigned long nrOfSamplesPerThreads = static_cast<unsigned long>(
++    std::ceil(static_cast<double>(sampleContainerSize) / static_cast<double>(Self::GetNumberOfWorkUnits())));
++
++  const auto pos_begin = std::min<size_t>(nrOfSamplesPerThreads * threadId, sampleContainerSize);
++  const auto pos_end = std::min<size_t>(nrOfSamplesPerThreads * (threadId + 1), sampleContainerSize);
++
++  /** Create iterator over the sample container. */
++  const auto beginOfSampleContainer = sampleContainer->cbegin();
++  const auto threader_fbegin = beginOfSampleContainer + pos_begin;
++  const auto threader_fend = beginOfSampleContainer + pos_end;
++  auto computeValueAndDerivativeFunc = [this](const std::string& mode) {
++    if (mode == "Jacobian") {
++        return &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeJacobian;
++    } else {
++        return &ImpactImageToImageMetric<TFixedImage, TMovingImage>::ComputeValueAndDerivativeStatic;
++    }
++  }(this->GetMode());
++
++  std::vector<FixedImagePointType> fixedPoints;
++  fixedPoints.reserve(nrOfSamplesPerThreads);
++  for (auto threader_fiter = threader_fbegin; threader_fiter != threader_fend; ++threader_fiter){
++      fixedPoints.push_back(threader_fiter->m_ImageCoordinates);
++  }
++  loss.m_numberOfPixelsCounted += (this->*computeValueAndDerivativeFunc)(fixedPoints, loss.m_losses);
++} // end ThreadedGetValueAndDerivative
++
++/**
++ * ******************* AfterThreadedGetValueAndDerivative *******************
++ */
++template <typename TFixedImage, typename TMovingImage>
++void
++ImpactImageToImageMetric<TFixedImage, TMovingImage>::AfterThreadedGetValueAndDerivative(
++  MeasureType &    value,
++  DerivativeType & derivative) const
++{
++  auto& loss = this->m_LossThreadStruct[0];
++  for (ThreadIdType i = 1; i < Self::GetNumberOfWorkUnits(); ++i)
++  {
++    loss += this->m_LossThreadStruct[i]; 
++  }
++  Superclass::m_NumberOfPixelsCounted = loss.m_numberOfPixelsCounted;
++  /** Check if enough samples were valid. */
++  this->CheckNumberOfSamples();
++  
++  /** Accumulate values. */
++  value = loss.GetValue();
++  derivative = loss.GetDerivative();
++} // end AfterThreadedGetValueAndDerivative
++
++} // end namespace itk
++
++#endif // end #ifndef _itkImpactImageToImageMetric_hxx
