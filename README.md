@@ -52,10 +52,7 @@ IMPACT has demonstrated strong generalization performance across multiple tasks 
 
 ---
 
-> 🧠 **IMPACT transforms image registration into a semantic alignment task**, leveraging deep anatomical priors instead of pixel-level similarities.
-
-In addition to its practical effectiveness, **IMPACT also serves as a modular platform for research and experimentation**,  
-enabling controlled comparisons across pretrained models, feature layers, patch sizes, loss functions, and sampling strategies.
+> 🔍 **IMPACT redefines image registration as a semantic alignment task**, leveraging deep anatomical priors from pretrained models rather than relying on low-level pixel similarities. Beyond its practical effectiveness, IMPACT is also a modular research platform, enabling systematic experimentation across pretrained models, feature layers, patch sizes, loss functions, and sampling strategies.
 
 ## 🚀 Quick Start with Docker
 
