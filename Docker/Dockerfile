@@ -23,14 +23,11 @@ ENV LD_LIBRARY_PATH="/opt/cuda/lib64:${LD_LIBRARY_PATH}"
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,utility
 
-
-RUN git clone https://github.com/SuperElastix/elastix.git
-WORKDIR /lib/elastix
-COPY ./Impact.diff ./Impact.diff
-RUN git apply ./Impact.diff
+RUN git clone https://github.com/vboussot/ImpactElastix.git
+WORKDIR /lib/ImpactElastix
 RUN mkdir /lib/elastix-build && mkdir /lib/elastix-install
 WORKDIR /lib/elastix-build
-RUN cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ -DITK_DIR=../ITK_install/lib/cmake/ITK-6.0/ -DCMAKE_INSTALL_PREFIX:PATH=../elastix-install  ../elastix
+RUN cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ -DITK_DIR=../ITK_install/lib/cmake/ITK-6.0/ -DCMAKE_INSTALL_PREFIX:PATH=../elastix-install  ../ImpactElastix
 RUN make -j12 install
 
 WORKDIR /lib

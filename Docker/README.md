@@ -1,67 +1,84 @@
 # 🐳 Docker for Elastix + IMPACT Metric
 
-This Docker environment builds a version of **Elastix** with support for the **IMPACT similarity metric**, enabling semantic image registration based on TorchScript-extracted features.
+This Docker environment builds a version of **Elastix** with support for the **IMPACT similarity metric**.
 
 ---
 
 ## ⚙️ Build the Docker Image
 
-From the `docker/` directory, run:
+From the root of the repository:
 
 ```bash
-docker build -t elastix_impact .
+docker build -t elastix_impact docker/
 ```
+
+---
 
 ## 🚀 Run the Container
 
-To execute a registration, run:
+To execute a registration:
 
 ```bash
 docker run --rm --gpus all \
   -v "./Data:/Data" \
-  -v './Out:/Out" \
+  -v "./Out:/Out" \
   elastix_impact
 ```
 
+---
+
 ## 📁 Required Folder Structure
 
-The container expects a specific folder structure inside the `/Data` directory:
+The container expects the following files inside the `Data/` directory:
 
-- `/Data/Models/` must contain the TorchScript-exported models used by the IMPACT metric (e.g., TotalSegmentator, SAM2.1, etc.).
-- `/Data/FixedImage.mha` is the fixed image used for registration.
-- `/Data/MovingImage.mha` is the moving image that will be aligned.
-- `/Data/ParameterMap.txt` is the Elastix parameter file, which must include the configuration for the Impact metric.
+- `Data/Models/`  
+  Must contain the TorchScript-exported models used by the IMPACT metric (e.g., TotalSegmentator, SAM2.1, etc.).  
+  👉 See [`Data/Models/README.md`](../Data/Models/README.md) for model download instructions.
 
-The following files are optional but can be included to enhance registration:
+- `Data/FixedImage.mha` and `Data/MovingImage.mha`
+  The images used for registration.
 
-- `/Data/Fixed_mask.mha` and `/Data/Moving_mask.mha` can be used to restrict the metric computation to specific regions.
-- `/Data/Fixed_landmarks.txt` and `/Data/Moving_landmarks.txt` can be used for evaluation (TRE).
+  ⚠️ **Preprocessing Recommendation**  
+  Input images must be **preprocessed consistently with the training of the selected model**.  
+  For TotalSegmentator-based models, images should be in **canonical orientation**.
 
-All output files (transforms, logs) will be written to the `/Out` directory mounted into the container.
+  Apply the appropriate preprocessing depending on the model:
 
-## 🧠 Models
+  - **ImageNet-based models** (e.g., SAM2.1, DINOv2):  
+    - Normalize intensities to [0, 1]  
+    - Then standardize with mean `0.485` and standard deviation `0.229` 
 
-The `/Data/Models/` directory must contain the TorchScript-exported feature extractors used by the IMPACT metric.
+  - **MRI models** (e.g., TS/M730–M733):  
+    - Standardize intensities to zero mean and unit variance  
 
-These models are derived from publicly available pretrained networks such as TotalSegmentator, SAM2.1, DINOv2, Anatomix, or MIND. Each model is available in multiple versions corresponding to different feature extraction layers (e.g., `_1_Layers.pt`, `_2_Layers.pt`, etc.).
+  - **CT models** (e.g., all other TotalSegmentator variants, MIND):  
+    - Clip intensities to `[-1024, 276]` HU  
+    - Then normalize by centering at `-370 HU` and scaling by `436.6`
 
-You can download compatible models directly from the Hugging Face repository:
+- `Data/ParameterMap.txt`  
+  Elastix parameter file with the configuration for Impact.  
+  👉 See [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.
 
-🔗 https://huggingface.co/VBoussot/impact-torchscript-models
+Optional files (for mask-based registration or evaluation):
 
-To automate this, use the following script provided in the `/Data/Models` directory:
+- `Data/Fixed_mask.mha` and `Data/Moving_mask.mha` — binary masks to restrict metric computation.
+- `Data/Fixed_landmarks.txt` and `Data/Moving_landmarks.txt` — optional landmarks for TRE evaluation.
 
-```bash
-sh download_models.sh
-```
+Output results (transforms, logs) will be written to the mounted `Out/` directory.
 
-All models are exported in **TorchScript format** (`.pt`). You can reference them in your Elastix parameter map as follows:
+---
 
-```txt
-(ModelsPath "/Data/Models/SAM2.1/Tiny_1_Layers.pt")
-```
+## 📜 Example
 
-## 🧠 Models
+To see a complete example of how to run a registration using this Docker setup, check:
 
-The `./Data/Models/` directory must contain the TorchScript-exported feature extractors used by the IMPACT metric.
-See [`Data/Models/README.md`](Data/Models/README.md) for full details.
+👉 [`docker/run_docker_impact_example.py`](run_docker_impact_example.py)
+
+---
+
+### 💡 Using GPU:
+
+If you have a compatible GPU and the necessary toolkit (e.g., NVIDIA Docker support), it will be available inside the Docker container. You can select which GPU to use by setting the GPU parameter in the ParameterMap file ((GPU 0), (GPU 1), or (GPU -1) to disable GPU usage). This enables the registration process to run on the GPU, significantly speeding up computation.
+
+Without GPU / No Toolkit:
+If you don't have a GPU or the required toolkit, simply remove the --gpus all flag from the command. In this case, set (GPU -1) in the Elastix parameter map to disable GPU usage and run the process on the CPU.

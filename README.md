@@ -1,43 +1,61 @@
 # 🔬 IMPACT: A Generic Semantic Loss for Multimodal Image Registration
 
-This repository provides the official implementation of **IMPACT** (Image Metric with Pretrained model-Agnostic Comparison for Transmodality registration), a generic similarity metric for multimodal medical image registration based on pretrained semantic features.
+**IMPACT** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
 
-The method is described in the following paper:
-
-> IMPACT: A Generic Semantic Loss for Multimodal Medical Image Registration [arXiv:2503.24121](https://arxiv.org/abs/2503.24121) – _Under review_  
+> 🔗 IMPACT: A Generic Semantic Loss for Multimodal Image Registration 
 > Valentin Boussot, Cédric Hémon, Jean-Claude Nunes, Jason Downling, Simon Rouzé, Caroline Lafond, Anaïs Barateau, Jean-Louis Dillenseger
+> [arXiv:2503.24121](https://arxiv.org/abs/2503.24121) – _Under review_ 
 
 ---
 
 ## ✨ Key Features
 
-- **Generic, training-free semantic similarity**  
-  IMPACT leverages semantic features from large-scale pretrained segmentation models (e.g., TotalSegmentator, SAM) without any task-specific training.
+- **Generic, Training-free**  
+  No need for task-specific training, IMPACT reuses powerful representations from large-scale pretrained segmentation models.
 
-- **TorchScript-based runtime feature extraction**  
-  Compatible with any TorchScript model, enabling flexible integration of 2D/3D architectures and seamless GPU acceleration.
+- **Flexible model integration**  
+  Compatible with TorchScript 2D/3D models (e.g., TotalSegmentator, SAM2.1, MIND), supporting multi-layer fusion and multi-resolution setups.
 
-- **Multi-layer semantic fusion**  
-  Supports combining features across multiple model layers with flexible configuration.
+- **Jacobian vs Static optimization modes**  
+  Choose between fully differentiable Jacobian mode (for downsampling models) and fast inference-only Static mode, depending on model type and computation time constraints.
 
-- **Jacobian and Static optimization modes**  
-  Choose between gradient-based (Jacobian) or precomputed feature mode (Static) depending on speed/memory trade-offs.
+- **Robust across modalities**  
+  Handles complex multimodal scenarios (CT/CBCT, MR/CT) using a unified semantic loss that bypasses raw intensity mismatches.
 
-- **Patch-based sampling with resolution-aware alignment**  
-  Uses patch sampling strategies and resolution-specific settings (voxel size, patch size, etc.) for efficient and precise alignment.
-
-- **Docker-ready for quick deployment**  
-  A containerized version is available for instant testing, eliminating dependency hassles.
-
-- **Benchmark-proven**  
+- **Benchmark-proven**
   Ranked in the top participants of multiple Learn2Reg challenges, showing state-of-the-art performance across diverse tasks (thorax, abdomen, pelvis, CT/CBCT/MRI).
 
-- **Efficient compute time**  
-  Registration typically takes **~300 seconds per image pair** in *Jacobian* mode, and around **~150 seconds** in *Static* mode on GPU.
+- **Seamless integration with Elastix**  
+  Natively implemented as a standard Elastix metric, IMPACT inherits all the strengths of classical registration:  
+  multi-resolution strategies, mask support, transformation priors, precise interpolation control, and full reproducibility.  
+  It also handles **images of different sizes, resolutions, and fields of view**, 
+  making it ideal for real-world clinical datasets with heterogeneous inputs.
 
-- **Weakly-supervised mask support**  
-  Natively supports mask-based supervision for focusing on regions of interest during registration (e.g., lungs, organs).
+- **Efficient runtime**  
+  - ~150 seconds (Static mode)  
+  - ~300 seconds (Jacobian mode)
+
+- **Docker-ready for quick deployment**  
+  Run out of the box with a single Docker command, no need to install dependencies manually.
+
 ---
+
+## 🏆 Challenge Results
+
+IMPACT has demonstrated strong generalization performance across multiple tasks without retraining:
+
+| Challenge       | Task                           | Rank      
+|----------------|--------------------------------|-----------
+| **Learn2Reg 2021** | CT Lung Registration            | 🥉 3rd     
+| **Learn2Reg 2023** | Thorax CBCT                    | 🥉 Top-6
+| **Learn2Reg 2023** | Abdomen MR→CT  | 🥈 2nd 
+
+---
+
+> 🧠 **IMPACT transforms image registration into a semantic alignment task**, leveraging deep anatomical priors instead of pixel-level similarities.
+
+In addition to its practical effectiveness, **IMPACT also serves as a modular platform for research and experimentation**,  
+enabling controlled comparisons across pretrained models, feature layers, patch sizes, loss functions, and sampling strategies.
 
 ## 🚀 Quick Start with Docker
 
@@ -45,12 +63,12 @@ You can quickly test the IMPACT metric using the provided Docker environment:
 
 ```bash
 git clone https://github.com/vboussot/ImpactLoss.git
-cd ImpactLoss/docker
+cd ImpactLoss
 ```
 
 Build the Docker image
 ```bash
-docker build -t elastix_impact .
+docker build -t elastix_impact Docker
 ```
 
 Then, run Elastix with your own data:
@@ -63,9 +81,9 @@ docker run --rm --gpus all \
 ```
 
 Make sure that the `/Data` folder contains:
-- `FixedImage.mha`, `MovingImage.mha`
-- `ParameterMap.txt` using Impact configuration
-- A `/Data/Models/` directory with TorchScript models
+- `FixedImage.mha`, `MovingImage.mha` your input images to be registered.
+- `ParameterMap.txt` using Impact configuration. 👉 See [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.
+- A `/Data/Models/` directory with TorchScript models. 👉 See [`Data/Models/README.md`](../Data/Models/README.md) for model download instructions.
 
 See [`docker/README.md`](docker/README.md) for full details and usage examples.
 
@@ -73,26 +91,13 @@ See [`docker/README.md`](docker/README.md) for full details and usage examples.
 
 ## 🛠️ Manual Build Instructions (without Docker)
 
-To compile Elastix with the IMPACT metric on your own system, you will need:
+Build Elastix with IMPACT support directly on your machine.
 
-- A CUDA-compatible GPU (for LibTorch GPU backend)
-- CMake ≥ 3.18
-- GCC ≥ 10 (recommended)
+### 📦 (Optional) Get LibTorch (if not already installed)
 
-### ✅ Required dependencies
+Download and extract the **C++ distribution** of LibTorch (with or without CUDA) from the official website:
 
-Install the following packages using your system’s package manager:
-
-- `git`, `cmake`, `gcc`, `g++`, `make`, `cuda`
-
-### 📦 (Optional) Get LibTorch (if not already installed):
-
-Download and extract the C++ distribution of LibTorch:
-
-```bash
-wget https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.6.0%2Bcu124.zip
-unzip libtorch*.zip
-```
+🔗 https://pytorch.org/
 
 ### 📦 (Optional) Build ITK (if not already installed):
 
@@ -129,7 +134,10 @@ cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ \
       ../ImpactElastix
 ```
 
-5. Build and install Elastix with IMPACT:
+- `Torch_DIR`: path to the **CMake config directory of LibTorch** (usually inside `libtorch/share/cmake/Torch/`)
+- `ITK_DIR`: path to the **CMake config directory of ITK**, typically inside your ITK install folder (e.g., `ITK-install/lib/cmake/ITK-*`)
+
+4. Build and install Elastix with IMPACT:
 
 ```bash
 make install
@@ -143,225 +151,28 @@ The final binaries will be available in:
 
 ## ⚙️ Run Elastix
 
-Make sure that the `/Data` folder contains:
-- `FixedImage.mha`, `MovingImage.mha`
-- `ParameterMap.txt` using Impact configuration
-- A `/Data/Models/` directory with TorchScript models. See [`Data/Models/README.md`](Data/Models/README.md) for full details.
+To use IMPACT, start by downloading the pretrained TorchScript models.  
+👉 See [`Data/Models/README.md`](../Data/Models/README.md) for download instructions.
 
-A complete example of how to run registration with IMPACT is provided in the script [`impact_example.py`](impact_example.py).
+Elastix is executed as usual, using a parameter map configured to use the IMPACT metric.  
+👉 Refer to [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.
 
-## ⚙️ IMPACT Parameter Map Reference
+⚠️ **Preprocessing Recommendation**  
+Input images must be **preprocessed consistently with the training of the selected model**.  
+For TotalSegmentator-based models, images should be in **canonical orientation**.
 
-This section describes the configuration parameters required to use the `IMPACT` in Elastix.
+Apply the appropriate preprocessing depending on the model:
 
+- **ImageNet-based models** (e.g., SAM2.1, DINOv2):  
+  - Normalize intensities to [0, 1]  
+  - Then standardize with mean `0.485` and standard deviation `0.229` 
 
-### 🔗 Example Minimal Configuration
+- **MRI models** (e.g., TS/M730–M733):  
+  - Standardize intensities to zero mean and unit variance  
 
-```txt
-(ModelsPath "/Data/Models/TS/M291_1_Layers.pt")
-(Dimension "3")
-(NumberOfChannels "1")
-(PatchSize "5*5*5")
-(VoxelSize "1.5*1.5*1.5")
-(LayersMask "1")
-(SubsetFeatures "32")
-(LayersWeight "1")
-(Mode "Jacobian")
-(GPU 0)
-(PCA "0")
-(Distance "MSE")
-(FeaturesMapUpdateInterval -1)
+- **CT models** (e.g., all other TotalSegmentator variants, MIND):  
+  - Clip intensities to `[-1024, 276]` HU  
+  - Then normalize by centering at `-370 HU` and scaling by `436.6`
 
-### 📘 Parameter Descriptions
-
-- **`ModelsPath`**  
-  Path to TorchScript models used for feature extraction.  
-  Example:  
-  ```txt
-  (ModelsPath "/Models/model2.pt")
-  ```
-
-- **`Dimension`**  
-  Dimensionality of the model input images (typically `"2"` or `"3"`).    
-  ```txt
-  (Dimension "3")
-  ```
-
-- **`NumberOfChannels`**  
-  Number of channels in the model input image (e.g., `1` for grayscale, `3` for RGB).  
-  ```txt
-  (NumberOfChannels "1")
-  ```
-
-- **`PatchSize`**  
-  Local patch size (in voxels) for feature sampling. Format: `X*Y*Z`.   
-  ```txt
-  (PatchSize "5*5*5")
-  ```
-
-- **`VoxelSize`**  
-  Physical spacing of the voxels (in mm).  
-  Defines the resolution of features extracted from the model.  
-  ```txt
-  (VoxelSize "1.5*1.5*1.5")
-  ```
-
-- **`LayersMask`**  
-  Binary string that selects which output layers to use.  
-  For example, `"1"` selects the first layer, `"00000001"` selects the last layer.  
-  ```txt
-  (LayersMask "1")
-  ```
-
-- **`SubsetFeatures`**  
-  Number of feature channels to randomly sample per voxel.  
-  Helps reduce dimensionality and memory usage.  
-  ```txt
-  (SubsetFeatures "32")
-  ```
-
-- **`LayersWeight`**  
-  Weight applied to each model or layer in the final loss.  
-  Allows tuning the relative importance.  
-  ```txt
-  (LayersWeight "1")
-  ```
-
-- **`Mode`**  
-  Execution mode of the metric:  
-  - `"Static"` = features are precomputed once  
-  - `"Jacobian"` = features are recomputed and gradients are backpropagated  
-  ```txt
-  (Mode "Jacobian")
-  ```
-
-- **`GPU`**  
-  Index of the GPU to use (e.g., `0` for the first GPU).  
-  Set to `-1` to force CPU mode.  
-  ```txt
-  (GPU 0)
-  ```
-
-- **`PCA`**  
-  Number of principal components to retain (for feature compression).  
-  Set to `0` to disable PCA.  
-  ```txt
-  (PCA "0")
-  ```
-
-- **`Distance`**  
-  Distance function used to compare feature vectors.  
-  Supported values: `L1`, `L2`, `Cosine`, `L1Cosine`, `Dice`, `NCC`.  
-  ```txt
-  (Distance "L2")
-  ```
-
-- **`FeaturesMapUpdateInterval`**  
-  In `"Static"` mode, controls how often features are recomputed.  
-  Set to `-1` to never update (fully fixed features).  
-  ```txt
-  (FeaturesMapUpdateInterval -1)
-  ```
-
-- **`WriteFeatureMaps`**  
-  Enables saving the input images and the corresponding output feature maps to disk when using `"Static"` mode.  
-  Useful for inspection, debugging, or visualizing which semantic features are extracted at each level.  
-  The feature maps are saved in the output directory with the following naming conventions:
-
-  - Input images:  
-    ```
-    Fixed_<N>_<M>.mha
-    Moving_<N>_<M>.mha
-    ```
-    where `<N>` is the resolution level and `<M>` is the model index.
-
-  - Feature maps:  
-    ```
-    FeatureMap/Fixed_<N>_<R1>_<R2>_<R3>.mha
-    FeatureMap/Moving_<N>_<R1>_<R2>_<R3>.mha
-    ```
-    where `<R1>, <R2>, <R3>` are the voxel sizes used.
-
-  Example:  
-  ```txt
-  (WriteFeatureMaps "/Data/Features")
-  ```
-
-  Default: `"false"`
-
-
-### 🔧 Advanced Use: Multi-model and Multi-resolution
-
-IMPACT supports the use of multiple pretrained models in parallel, and allows full control over their configuration at each resolution level.
-
----
-
-#### 🧠 Multi-model Setup
-
-You can provide multiple TorchScript models using space-separated paths:
-
-```txt
-(ModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
-```
-
-Each model must have corresponding values for all key parameters, such as:
-
-```txt
-(Dimension "3 3")
-(NumberOfChannels "1 1")
-(PatchSize "5*5*5 7*7*7")
-(VoxelSize "1.5*1.5*1.5 6*6*6")
-(LayersMask "00000001 1")
-(SubsetFeatures "64 16")
-(LayersWeight "1.0 0.5")
-(Distance "Dice L2")
-(PCA "0 0")
-```
-
----
-
-#### 🌀 Multi-resolution Configuration
-
-All parameters support Elastix's **multi-resolution** syntax.  
-You can define a different value per resolution level (outer quotes per level):
-
-```txt
-(VoxelSize "6*6*6" "3*3*3" "1.5*1.5*1.5" "1*1*1")
-```
-
-This defines a 4-resolution setup where:
-- First model uses decreasing resolution across levels
-
-The same syntax can be used for:
-- `VoxelSize`
-- `LayersMask`
-- `SubsetFeatures`
-- `LayersWeight`
-- `PCA`
-- `Distance`
-
----
-
-#### 🔀 Fixed and Moving-Specific Models
-
-You can also assign **different models** to the fixed and moving images:
-
-```txt
-(FixedModelsPath "/Models/TS/M850_8_Layers.pt")
-(MovingModelsPath "/Models/MIND/R1D2.pt")
-```
-
-In that case, use the `Fixed*` and `Moving*` versions of all model-related parameters:
-
-```txt
-(FixedDimension "3")
-(FixedVoxelSize "1.5*1.5*1.5")
-(MovingDimension "3")
-(MovingVoxelSize "6*6*6")
-```
-
-All other parameters (`PatchSize`, `Distance`, `LayersMask`, etc.) should follow the same rule.
-
----
-
-This flexibility allows you to combine low- and high-level features, handcrafted and learned representations, and modality-specific models — all in the same registration.
+A complete example of how to run registration with IMPACT is provided in:  
+👉 [`run_impact_example.py`](run_impact_example.py)
