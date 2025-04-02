@@ -72,7 +72,7 @@ Output results (transforms, logs) will be written to the mounted `Out/` director
 
 To see a complete example of how to run a registration using this Docker setup, check:
 
-👉 [`docker/run_docker_impact_example.py`](run_docker_impact_example.py)
+👉 [`Docker/run_docker_impact_example.py`](run_docker_impact_exemple.py)
 
 ---
 

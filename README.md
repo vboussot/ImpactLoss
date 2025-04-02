@@ -80,12 +80,12 @@ docker run --rm --gpus all \
   elastix_impact
 ```
 
-Make sure that the `/Data` folder contains:
+Make sure that the `Data/` folder contains:
 - `FixedImage.mha`, `MovingImage.mha` your input images to be registered.
-- `ParameterMap.txt` using Impact configuration. 👉 See [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.
-- A `/Data/Models/` directory with TorchScript models. 👉 See [`Data/Models/README.md`](../Data/Models/README.md) for model download instructions.
+- `ParameterMap.txt` using Impact configuration. 👉 See [`ParameterMaps/README.md`](ParameterMaps/README.md) for detailed configuration examples.
+- A `Data/Models/` directory with TorchScript models. 👉 See [`Data/Models/README.md`](Data/Models/README.md) for model download instructions.
 
-See [`docker/README.md`](docker/README.md) for full details and usage examples.
+See [`Docker/README.md`](Docker/README.md) for full details and usage examples.
 
 ---
 
@@ -152,10 +152,10 @@ The final binaries will be available in:
 ## ⚙️ Run Elastix
 
 To use IMPACT, start by downloading the pretrained TorchScript models.  
-👉 See [`Data/Models/README.md`](../Data/Models/README.md) for download instructions.
+👉 See [`Data/Models/README.md`](Data/Models/README.md) for download instructions.
 
 Elastix is executed as usual, using a parameter map configured to use the IMPACT metric.  
-👉 Refer to [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.
+👉 Refer to [`ParameterMaps/README.md`](ParameterMaps/README.md) for detailed configuration examples.
 
 ⚠️ **Preprocessing Recommendation**  
 Input images must be **preprocessed consistently with the training of the selected model**.  
