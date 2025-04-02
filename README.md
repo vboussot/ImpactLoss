@@ -47,7 +47,8 @@
 
 ## 🏆 Challenge Results
 
-IMPACT has demonstrated strong generalization performance across multiple tasks without retraining:
+IMPACT has demonstrated strong generalization performance across multiple tasks without training
+🔗 [Learn2Reg Challenge](https://learn2reg.grand-challenge.org/)
 
 | Challenge       | Task                           | Rank      
 |----------------|--------------------------------|-----------
