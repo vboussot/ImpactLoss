@@ -84,7 +84,7 @@ docker run --rm --gpus all \
 ```
 
 Make sure that the `Data/` folder contains:
-- `FixedImage.mha`, `MovingImage.mha` your input images to be registered.
+- `FixedImage.mha`, `MovingImage.mha` your input images to be registered. These files can be provided in either .mha or .nii.gz format.
 - `ParameterMap.txt` using Impact configuration. 👉 See [`ParameterMaps/README.md`](ParameterMaps/README.md) for detailed configuration examples.
 - A `Data/Models/` directory with TorchScript models. 👉 See [`Data/Models/README.md`](Data/Models/README.md) for model download instructions.
 
