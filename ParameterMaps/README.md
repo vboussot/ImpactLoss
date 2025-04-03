@@ -225,6 +225,10 @@ You can define different settings per resolution level (outer quotes = one level
 
 This syntax is supported by all parameters.
 
+⚠️ Note: If a parameter is not explicitly specified for a given resolution level, the value from the first level is automatically reused for the remaining levels.
+
+This allows you to simplify the configuration when the same value applies across multiple resolutions.
+
 ---
 
 #### 🔀 Fixed and Moving-Specific Models

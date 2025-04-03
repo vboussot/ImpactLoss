@@ -50,7 +50,6 @@
 (UseAdaptiveStepSizes "true")
 (UseMultiThreadingForMetrics "true")
 (ASGDParameterEstimationMethod "DisplacementDistribution")
-//(MaximumStepLength 0.6602)
 (SigmoidInitialTime 0.0)
 (NoiseCompensation "true")
 (NumberOfSamplesForExactGradient 4096)

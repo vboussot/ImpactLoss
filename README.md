@@ -7,6 +7,8 @@
 
 **IMPACT** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
 
+📚 Reference
+
 > 🔗 IMPACT: A Generic Semantic Loss for Multimodal Image Registration 
 > Valentin Boussot, Cédric Hémon, Jean-Claude Nunes, Jason Downling, Simon Rouzé, Caroline Lafond, Anaïs Barateau, Jean-Louis Dillenseger
 > [arXiv:2503.24121](https://arxiv.org/abs/2503.24121) – _Under review_ 
@@ -19,24 +21,21 @@
   No need for task-specific training, IMPACT reuses powerful representations from large-scale pretrained segmentation models.
 
 - **Flexible model integration**  
-  Compatible with TorchScript 2D/3D models (e.g., TotalSegmentator, SAM2.1, MIND), supporting multi-layer fusion and multi-resolution setups.
+  Compatible with TorchScript 2D/3D models (e.g., TotalSegmentator, SAM2.1, MIND), supporting multi-layer and multi-model fusion, multi-resolution setups, and fully open to experimentation with custom architectures and configurations.
 
 - **Jacobian vs Static optimization modes**  
   Choose between fully differentiable Jacobian mode (for downsampling models) and fast inference-only Static mode, depending on model type and computation time constraints.
 
 - **Robust across modalities**  
-  Handles complex multimodal scenarios (CT/CBCT, MR/CT) using a unified semantic loss that bypasses raw intensity mismatches.
+  Handles complex multimodal scenarios (CT/CBCT, MR/CT) using a unified semantic loss robust to intensity variations.
 
 - **Benchmark-proven**
   Ranked in the top participants of multiple Learn2Reg challenges, showing state-of-the-art performance across diverse tasks (thorax, abdomen, pelvis, CT/CBCT/MRI).
 
 - **Seamless integration with Elastix**  
-  Natively implemented as a standard Elastix metric, IMPACT inherits all the strengths of classical registration:  
-  multi-resolution strategies, mask support, transformation priors, precise interpolation control, and full reproducibility.  
-  It also handles **images of different sizes, resolutions, and fields of view**, 
-  making it ideal for real-world clinical datasets with heterogeneous inputs.
+  Natively implemented as a standard Elastix metric, IMPACT inherits all the strengths of classical registration: multi-resolution strategies, mask support, sparce deformation models, and full reproducibility. It also handles images of different sizes, resolutions, and fields of view, making it ideal for real-world clinical datasets with heterogeneous inputs.
 
-- **Efficient runtime**  
+- **Efficient runtime for standard registration tasks**  
   - ~150 seconds (Static mode)  
   - ~300 seconds (Jacobian mode)
 
@@ -57,8 +56,6 @@ IMPACT has demonstrated strong generalization performance across multiple tasks 
 | **Learn2Reg 2023** | Abdomen MR→CT  | 🥈 2nd 
 
 ---
-
-> 🔍 **IMPACT redefines image registration as a semantic alignment task**, leveraging deep anatomical priors from pretrained models rather than relying on low-level pixel similarities. Beyond its practical effectiveness, IMPACT is also a modular research platform, enabling systematic experimentation across pretrained models, feature layers, patch sizes, loss functions, and sampling strategies.
 
 ## 🚀 Quick Start with Docker
 

@@ -8,7 +8,7 @@
 (VoxelSize "6*6*6" "3*3*3" "1.5*1.5*1.5" "1*1*1")
 (LayersMask "1")
  
-(SubsetFeatures "16")
+(SubsetFeatures "12")
 (LayersWeight "1")
 (Mode "Jacobian")
 (GPU 0)
@@ -50,7 +50,6 @@
 (UseAdaptiveStepSizes "true")
 (UseMultiThreadingForMetrics "true")
 (ASGDParameterEstimationMethod "DisplacementDistribution")
-//(MaximumStepLength 0.6602)
 (SigmoidInitialTime 0.0)
 (NoiseCompensation "true")
 (NumberOfSamplesForExactGradient 4096)
