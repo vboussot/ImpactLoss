@@ -10,7 +10,7 @@
 📚 Reference
 
 > 🔗 IMPACT: A Generic Semantic Loss for Multimodal Image Registration 
-> Valentin Boussot, Cédric Hémon, Jean-Claude Nunes, Jason Downling, Simon Rouzé, Caroline Lafond, Anaïs Barateau, Jean-Louis Dillenseger
+> Valentin Boussot, Cédric Hémon, Jean-Claude Nunes, Jason Dowling, Simon Rouzé, Caroline Lafond, Anaïs Barateau, Jean-Louis Dillenseger
 > [arXiv:2503.24121](https://arxiv.org/abs/2503.24121) – _Under review_ 
 
 ---
@@ -142,8 +142,20 @@ cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ \
 ```bash
 make install
 ```
+The final binaries will be located in:
 
-The final binaries will be available in:
+```
+../ImpactElastix-install/bin/elastix
+```
+
+Before running `elastix`, make sure the required shared libraries are accessible at runtime by setting the `LD_LIBRARY_PATH`:
+
+```bash
+export LD_LIBRARY_PATH=lib/libtorch/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=ImpactElastix-install/lib:$LD_LIBRARY_PATH
+```
+
+You can then run:
 
 ```bash
 ../ImpactElastix-install/bin/elastix
