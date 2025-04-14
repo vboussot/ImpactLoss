@@ -18,7 +18,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 (SubsetFeatures "32")
 (LayersWeight "1")
 (Mode "Jacobian")
-(GPU 0)
+(Device 0)
 (PCA "0")
 (Distance "L2")
 (FeaturesMapUpdateInterval -1)
@@ -143,7 +143,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   Relative importance of each layer in the final similarity score.  
 
 
-- **`GPU`**  
+- **`Device`**  
   GPU device index. Use `-1` to force CPU execution.  
 
 
@@ -209,7 +209,7 @@ Use space-separated lists for multiple models:
  ⚠️ **Note:** This syntax is not supported by parameters:
 
  - `Mode`  
- - `GPU`  
+ - `Device`  
  - `FeaturesMapUpdateInterval`  
  - `WriteFeatureMaps`
 
