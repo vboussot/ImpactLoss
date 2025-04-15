@@ -84,7 +84,7 @@ scripted_model.save("Data/Models/CustomModel/Custom_Model_Torchscript.pt")
 Once saved, your model can be used with IMPACT by referencing it in your Elastix configuration:
 
 ```txt
-(ModelsPath "Data/Models/CustomModel/Custom_Model_Torchscript.pt")
+(ImpactModelsPath "Data/Models/CustomModel/Custom_Model_Torchscript.pt")
 ```
 
 ✅ Don’t forget to set `ImpactPatchSize`, `ImpactDimension`, `ImpactNumberOfChannels`, and `ImpactLayersMask` based on the characteristics of your custom model in your `ParameterMap.txt`.
