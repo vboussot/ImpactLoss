@@ -9,43 +9,43 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 ### 🔗 Minimal Example
 
 ```txt
-(ModelsPath "/Data/Models/TS/M291_1_Layers.pt")
-(Dimension "3")
-(NumberOfChannels "1")
-(PatchSize "5*5*5")
-(VoxelSize "1.5*1.5*1.5")
-(LayersMask "1")
-(SubsetFeatures "32")
-(LayersWeight "1")
-(Mode "Jacobian")
-(GPU 0)
-(PCA "0")
-(Distance "L2")
-(FeaturesMapUpdateInterval -1)
-(WriteFeatureMaps "false")
+(ImpactModelsPath "/Data/Models/TS/M291_1_Layers.pt")
+(ImpactDimension "3")
+(ImpactNumberOfChannels "1")
+(ImpactPatchSize "5*5*5")
+(ImpactVoxelSize "1.5*1.5*1.5")
+(ImpactLayersMask "1")
+(ImpactSubsetFeatures "32")
+(ImpactLayersWeight "1")
+(ImpactMode "Jacobian")
+(ImpactGPU 0)
+(ImpactPCA "0")
+(ImpactDistance "L2")
+(ImpactFeaturesMapUpdateInterval -1)
+(ImpactWriteFeatureMaps "false")
 ```
 
 ---
 
 ### 📘 Parameter Descriptions
 
-- **`ModelsPath`**  
+- **`ImpactModelsPath`**  
   Path to TorchScript model used for feature extraction.
 
-- **`Dimension`**  
+- **`ImpactDimension`**  
   Dimensionality of the input expected by the TorchScript model.
   Typically:
   - `2` 2D models (e.g., SAM2.1, DINOv2) 
   - `3` 3D models (e.g., TotalSegmentator, Anatomix, MIND).
 
 
-- **`NumberOfChannels`**  
+- **`ImpactNumberOfChannels`**  
    Number of channels expected by the TorchScript model.
    Typically:
     - `1` for grayscale medical images (e.g., **TotalSegmentator**, **Anatomix**, **MIND**)
     - `3` for RGB-based models (e.g., **SAM2.1**, **DINOv2**)
 
-- **`PatchSize`**  
+- **`ImpactPatchSize`**  
   Size of the local patch (in voxels) used for feature extraction. 
   This value controls the spatial context seen by the feature extractor around each sampled point.
   
@@ -62,7 +62,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
     but it will slow down computation without improving registration quality.  
     Use the smallest valid size for best performance.
 
-- **`VoxelSize`**  
+- **`ImpactVoxelSize`**  
   Physical spacing of the voxels (in millimeters).  
   This defines the **resolution of the input image at which features are extracted** by the model.
 
@@ -72,9 +72,9 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 
   ⚠️ **Warning:** Do **not rely on Elastix’s default image pyramid resampling**,  
   as it may silently change the resolution of your images at each level,  
-  leading to inconsistencies with the `VoxelSize` explicitly defined in your configuration.
+  leading to inconsistencies with the `ImpactVoxelSize` explicitly defined in your configuration.
 
-  You should instead **explicitly define the `VoxelSize`** and **disable automatic resampling** in the image pyramid.
+  You should instead **explicitly define the `ImpactVoxelSize`** and **disable automatic resampling** in the image pyramid.
 
   #### 🔧 Recommended configuration to disable resampling:
   ```txt
@@ -84,10 +84,10 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   (MovingImagePyramidRescaleSchedule 1 1 1 1 1 1)
   ```
 
-  ✅ This ensures that the `VoxelSize` you provide is preserved exactly across all pyramid levels,  
+  ✅ This ensures that the `ImpactVoxelSize` you provide is preserved exactly across all pyramid levels,  
   so features are extracted at the **correct physical scale**.
 
-- **`LayersMask`**  
+- **`ImpactLayersMask`**  
   Binary string used to select which output layers of the model to include in the similarity computation.
 
   Each character corresponds to one layer:
@@ -101,7 +101,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   - `"11100000"` selects the first three layers
   - `"1"` selects the only layer (for single-layer models like MIND)
 
-- **`Mode`**  
+- **`ImpactMode`**  
   Defines how features are computed during registration:
 
   - `"Static"`: features are computed **once per image and per resolution level** (pure inference).  
@@ -134,34 +134,34 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
     ✅ Precise, fully differentiable  
     ❌ Slower
 
-- **`SubsetFeatures`**  
+- **`ImpactSubsetFeatures`**  
   Number of feature channels randomly selected per features voxel at each iteration.
   Reduces both computational cost and memory usage during registration.
 
 
-- **`LayersWeight`**  
+- **`ImpactLayersWeight`**  
   Relative importance of each layer in the final similarity score.  
 
 
-- **`GPU`**  
+- **`ImpactGPU`**  
   GPU device index. Use `-1` to force CPU execution.  
 
 
-- **`PCA`**  
+- **`ImpactPCA`**  
   Number of principal components to retain for dimensionality reduction. Set to `0` to disable.  
 
 
-- **`Distance`**  
+- **`ImpactDistance`**  
   Distance metric used to compare feature vectors. Supported values:  
   `L1`, `L2`, `Cosine`, `L1Cosine`, `Dice`, `NCC`, `DotProduct`.  
 
 
-- **`FeaturesMapUpdateInterval`**  
+- **`ImpactFeaturesMapUpdateInterval`**  
   In **`Static`** mode, this parameter controls how often the feature maps are recomputed during optimization.  
   - Set to `-1` to compute features **once per resolution level** (recommended for efficiency).  
   - Set to a positive integer (e.g., `10`) to recompute every _N_ iterations, which can improve alignment if deformation changes rapidly.
 
-- **`WriteFeatureMaps`**  
+- **`ImpactWriteFeatureMaps`**  
   Enables saving the input images and extracted feature maps to disk (only in `"Static"` mode).  
   Useful for inspection, debugging, or visualizing the semantic features used during registration.
 
@@ -194,24 +194,24 @@ IMPACT supports parallel use of multiple models and per-resolution customization
 Use space-separated lists for multiple models:
 
 ```txt
-(ModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
-(Dimension "3 3")
-(NumberOfChannels "1 1")
-(PatchSize "5*5*5 7*7*7")
-(VoxelSize "1.5*1.5*1.5 6*6*6")
-(LayersMask "00000001 1")
-(SubsetFeatures "64 16")
-(LayersWeight "1.0 0.5")
-(Distance "Dice L2")
-(PCA "0 0")
+(ImpactModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
+(ImpactDimension "3 3")
+(ImpactNumberOfChannels "1 1")
+(ImpactPatchSize "5*5*5 7*7*7")
+(ImpactVoxelSize "1.5*1.5*1.5 6*6*6")
+(ImpactLayersMask "00000001 1")
+(ImpactSubsetFeatures "64 16")
+(ImpactLayersWeight "1.0 0.5")
+(ImpactDistance "Dice L2")
+(ImpactPCA "0 0")
 ```
 
  ⚠️ **Note:** This syntax is not supported by parameters:
 
- - `Mode`  
- - `GPU`  
- - `FeaturesMapUpdateInterval`  
- - `WriteFeatureMaps`
+ - `ImpactMode`  
+ - `ImpactGPU`  
+ - `ImpactFeaturesMapUpdateInterval`  
+ - `ImpactWriteFeatureMaps`
 
 ---
 
@@ -220,7 +220,7 @@ Use space-separated lists for multiple models:
 You can define different settings per resolution level (outer quotes = one level):
 
 ```txt
-(VoxelSize "6*6*6" "3*3*3" "1.5*1.5*1.5" "1*1*1")
+(ImpactVoxelSize "6*6*6" "3*3*3" "1.5*1.5*1.5" "1*1*1")
 ```
 
 This syntax is supported by all parameters.
@@ -240,14 +240,14 @@ You can assign **different models** to the fixed and moving images using:
 (MovingModelsPath "/Models/MIND/R1D2.pt")
 ```
 
-In this case, all model-specific parameters must be defined **independently** for each image using the `Fixed*` and `Moving*` prefixes:
+In this case, all model-specific parameters must be defined **independently** for each image using the `ImpactFixed*` and `ImpactMoving*` prefixes:
 
-- `ModelsPath`  
-- `Dimension`  
-- `NumberOfChannels`  
-- `PatchSize`  
-- `VoxelSize`  
-- `LayersMask`
+- `ImpactFixedModelsPath`  
+- `ImpactFixedDimension`  
+- `ImpactFixedNumberOfChannels`  
+- `ImpactFixedPatchSize`  
+- `ImpactFixedVoxelSize`  
+- `ImpactFixedLayersMask`
 
 This enables **asymmetric model configurations**, where each image can use a model adapted to its modality or anatomical content. 
 

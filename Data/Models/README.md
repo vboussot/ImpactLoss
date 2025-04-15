@@ -35,7 +35,7 @@ This will download and organize all models into subfolders (`TS/`, `SAM2.1/`, `M
 Once the models are in place, you can reference them in your Elastix parameter map like this:
 
 ```txt
-(ModelsPath "/Data/Models/SAM2.1/Tiny_1_Layers.pt")
+(ImpactModelsPath "/Data/Models/SAM2.1/Tiny_1_Layers.pt")
 ```
 
 ## 🧪 Create Your Own Pretrained Model
@@ -87,4 +87,4 @@ Once saved, your model can be used with IMPACT by referencing it in your Elastix
 (ModelsPath "Data/Models/CustomModel/Custom_Model_Torchscript.pt")
 ```
 
-✅ Don’t forget to set `PatchSize`, `Dimension`, `NumberOfChannels`, and `LayersMask` based on the characteristics of your custom model in your `ParameterMap.txt`.
+✅ Don’t forget to set `ImpactPatchSize`, `ImpactDimension`, `ImpactNumberOfChannels`, and `ImpactLayersMask` based on the characteristics of your custom model in your `ParameterMap.txt`.
