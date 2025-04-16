@@ -59,7 +59,7 @@ IMPACT has demonstrated strong generalization performance across multiple tasks 
 
 ## 🔬 Modular and Extensible Design
 
-Beyond its performance, IMPACT is designed as a modular platform that facilitates systematic experimentation with pretrained models, feature layers, and distance functions. This flexibility enables researchers to explore various feature extraction methods in both algorithmic and deep learning–based registration approaches, fostering innovation and adaptability in multimodal image registration tasks.
+Beyond its performance, IMPACT is designed as a modular platform that facilitates systematic experimentation with pretrained models, feature layers, and distance functions. This flexibility enables researchers to explore various feature extraction methods, fostering innovation and adaptability in multimodal image registration tasks.
 
 ---
 
