@@ -93,6 +93,13 @@ Make sure that the `Data/` folder contains:
 
 See [`Docker/README.md`](Docker/README.md) for full details and usage examples.
 
+💡 You can also directly pull the prebuilt image from Docker Hub:
+```bash
+docker pull vboussot/elastix_impact
+```
+
+👉 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
+
 ---
 
 ## 🛠️ Manual Build Instructions (without Docker)
