@@ -10,17 +10,17 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 
 ```txt
 (ImpactModelsPath "/Data/Models/TS/M291_1_Layers.pt")
-(ImpactDimension "3")
-(ImpactNumberOfChannels "1")
-(ImpactPatchSize "5*5*5")
-(ImpactVoxelSize "1.5*1.5*1.5")
-(ImpactLayersMask "1")
-(ImpactSubsetFeatures "32")
-(ImpactLayersWeight "1")
+(ImpactDimension 3)
+(ImpactNumberOfChannels 1)
+(ImpactPatchSize 5 5 5)
+(ImpactVoxelSize 1.5 1.5 1.5)
+(ImpactLayersMask 1)
+(ImpactSubsetFeatures 32)
+(ImpactPCA 0)
+(ImpactDistance "L2")
+(ImpactLayersWeight 1)
 (ImpactMode "Jacobian")
 (ImpactGPU 0)
-(ImpactPCA "0")
-(ImpactDistance "L2")
 (ImpactFeaturesMapUpdateInterval -1)
 (ImpactWriteFeatureMaps "false")
 ```
@@ -50,8 +50,10 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   This value controls the spatial context seen by the feature extractor around each sampled point.
   
   Format:
-  - `X*Y*Z` for 3D models  
-  - `X*Y` for 2D models
+  - `X Y Z` for 3D models  
+  - `X Y` for 2D models
+
+  ⚠️ Note: If only a partial definition is provided, the first value is automatically reused to fill the missing dimensions. For example, 5 becomes 5 5 5 in 3D or 5 5 in 2D.
 
   The **minimum valid patch size** corresponds to the **field of view (FOV)** of the selected model and layer.  
   This is the smallest spatial context required for the model to produce valid features. 
@@ -67,8 +69,10 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   This defines the **resolution of the input image at which features are extracted** by the model.
 
   Format:
-  - `X*Y*Z` for 3D models  
-  - `X*Y` for 2D models
+  - `X Y Z` for 3D models  
+  - `X Y` for 2D models
+  
+  ⚠️ Note: If only one or two values are provided, the first value is reused for the missing dimensions. For example, 1.0 becomes 1.0 1.0 1.0 in 3D, or 1.0 1.0 in 2D.
 
   ⚠️ **Warning:** Do **not rely on Elastix’s default image pyramid resampling**,  
   as it may silently change the resolution of your images at each level,  
@@ -108,7 +112,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
     The image is divided into overlapping patches defined by `PatchSize`, and features are extracted per patch.  
     To apply the model to the **entire image without patching**, use:
     ```txt
-    (PatchSize "0*0*0")
+    (PatchSize 0 0 0)
     ```
     This avoids edge artifacts, especially with fully convolutional networks.
 
@@ -138,7 +142,6 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
   Number of feature channels randomly selected per features voxel at each iteration.
   Reduces both computational cost and memory usage during registration.
 
-
 - **`ImpactLayersWeight`**  
   Relative importance of each layer in the final similarity score.  
 
@@ -150,11 +153,9 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 - **`ImpactPCA`**  
   Number of principal components to retain for dimensionality reduction. Set to `0` to disable.  
 
-
 - **`ImpactDistance`**  
   Distance metric used to compare feature vectors. Supported values:  
   `L1`, `L2`, `Cosine`, `L1Cosine`, `Dice`, `NCC`, `DotProduct`.  
-
 
 - **`ImpactFeaturesMapUpdateInterval`**  
   In **`Static`** mode, this parameter controls how often the feature maps are recomputed during optimization.  
@@ -182,45 +183,33 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
       Moving_<res>_<model>.mha
       ```
 
-  where `<res>` is the resolution level, and `<X>`, `<Y>`, `<Z>` are the voxel sizes used for patch extraction.
+  where `<res>` is the resolution level, `<model>` is the index of the model used for feature extraction at that level, and `<X>`, `<Y>`, `<Z>` are the voxel sizes used for patch extraction. <model>: Index of the model used for feature extraction at that level.
+
 ---
 
 ### 🔧 Advanced Use: Multi-model and Multi-resolution
 
 IMPACT supports parallel use of multiple models and per-resolution customization.
 
-#### 🧠 Multi-model Setup
-
-Use space-separated lists for multiple models:
-
-```txt
-(ImpactModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
-(ImpactDimension "3 3")
-(ImpactNumberOfChannels "1 1")
-(ImpactPatchSize "5*5*5 7*7*7")
-(ImpactVoxelSize "1.5*1.5*1.5 6*6*6")
-(ImpactLayersMask "00000001 1")
-(ImpactSubsetFeatures "64 16")
-(ImpactLayersWeight "1.0 0.5")
-(ImpactDistance "Dice L2")
-(ImpactPCA "0 0")
-```
-
- ⚠️ **Note:** This syntax is not supported by parameters:
-
- - `ImpactMode`  
- - `ImpactGPU`  
- - `ImpactFeaturesMapUpdateInterval`  
- - `ImpactWriteFeatureMaps`
-
----
-
 #### 🌀 Multi-resolution Configuration
 
-You can define different settings per resolution level (outer quotes = one level):
+You can specify different values for each resolution level using a flat list of space-separated entries:
 
 ```txt
-(ImpactVoxelSize "6*6*6" "3*3*3" "1.5*1.5*1.5" "1*1*1")
+(ImpactModelsPath "/Data/Models/TS/M291_1_Layers.pt" "/Data/Models/SAM/Tiny_2_Layers.pt")
+(ImpactDimension 3 2)
+(ImpactNumberOfChannels 1 3)
+(ImpactPatchSize 5 5 5 29 29 29)
+(ImpactVoxelSize 3 3 3 1.5 1.5 1.5)
+(ImpactLayersMask "1" "01")
+(ImpactPCA 0 3)
+(ImpactSubsetFeatures 32 3)
+(ImpactDistance "L2" "L1")
+(ImpactLayersWeight 1 1)
+(ImpactMode "Static" "Jacobian")
+(ImpactGPU 0 0)
+(ImpactFeaturesMapUpdateInterval -1 -1)
+(ImpactWriteFeatureMaps "false" "false")
 ```
 
 This syntax is supported by all parameters.
@@ -228,6 +217,32 @@ This syntax is supported by all parameters.
 ⚠️ Note: If a parameter is not explicitly specified for a given resolution level, the value from the first level is automatically reused for the remaining levels.
 
 This allows you to simplify the configuration when the same value applies across multiple resolutions.
+
+---
+
+#### 🧠 Multi-model Setup
+
+To assign multiple feature extractors, use space-separated lists enclosed in a string ("...") for each parameter:
+
+```txt
+(ImpactModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
+(ImpactDimension "3 3")
+(ImpactNumberOfChannels "1 1")
+(ImpactPatchSize "5 5 5 7 7 7")
+(ImpactVoxelSize "1.5 1.5 1.5 6 6 6")
+(ImpactLayersMask "00000001 1")
+(ImpactPCA "0 0")
+(ImpactSubsetFeatures "64 16")
+(ImpactDistance "Dice L2")
+(ImpactLayersWeight "1.0 0.5")
+```
+
+ ⚠️ Not model-specific: the following parameters apply globally and cannot be set per model:
+
+ - `ImpactMode`  
+ - `ImpactGPU`  
+ - `ImpactFeaturesMapUpdateInterval`  
+ - `ImpactWriteFeatureMaps`
 
 ---
 
@@ -242,11 +257,11 @@ You can assign **different models** to the fixed and moving images using:
 
 In this case, all model-specific parameters must be defined **independently** for each image using the `ImpactFixed*` and `ImpactMoving*` prefixes:
 
-- `ImpactFixedModelsPath`  
-- `ImpactFixedDimension`  
-- `ImpactFixedNumberOfChannels`  
-- `ImpactFixedPatchSize`  
-- `ImpactFixedVoxelSize`  
+- `ImpactFixedModelsPath`
+- `ImpactFixedDimension`
+- `ImpactFixedNumberOfChannels`
+- `ImpactFixedPatchSize`
+- `ImpactFixedVoxelSize`
 - `ImpactFixedLayersMask`
 
 This enables **asymmetric model configurations**, where each image can use a model adapted to its modality or anatomical content. 
