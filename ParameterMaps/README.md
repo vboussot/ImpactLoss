@@ -21,6 +21,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 (ImpactLayersWeight 1)
 (ImpactMode "Jacobian")
 (ImpactGPU 0)
+(ImpactUseMixedPrecision "true")
 (ImpactFeaturesMapUpdateInterval -1)
 (ImpactWriteFeatureMaps "false")
 ```
@@ -149,7 +150,12 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 - **`ImpactGPU`**  
   GPU device index. Use `-1` to force CPU execution.  
 
-
+- **`ImpactUseMixedPrecision`**  
+  Enables or disables the use of mixed precision (float16 and float32) during registration.
+  Setting this parameter to true will reduce memory consumption and improve computational speed on supported GPUs.
+  However, performance may degrade on CPU as it lacks native support for float16.
+  Recommended to be disabled on CPU.
+  
 - **`ImpactPCA`**  
   Number of principal components to retain for dimensionality reduction. Set to `0` to disable.  
 
@@ -208,6 +214,7 @@ You can specify different values for each resolution level using a flat list of 
 (ImpactLayersWeight 1 1)
 (ImpactMode "Static" "Jacobian")
 (ImpactGPU 0 0)
+(ImpactUseMixedPrecision "true" "true")
 (ImpactFeaturesMapUpdateInterval -1 -1)
 (ImpactWriteFeatureMaps "false" "false")
 ```
@@ -240,7 +247,8 @@ To assign multiple feature extractors, use space-separated lists enclosed in a s
  ⚠️ Not model-specific: the following parameters apply globally and cannot be set per model:
 
  - `ImpactMode`  
- - `ImpactGPU`  
+ - `ImpactGPU`
+ - `ImpactUseMixedPrecision`
  - `ImpactFeaturesMapUpdateInterval`  
  - `ImpactWriteFeatureMaps`
 
