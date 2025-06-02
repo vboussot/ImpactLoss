@@ -9,6 +9,10 @@
 
 **IMPACT** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
 
+
+
+
+
 📚 Reference
 
 > 🔗 IMPACT: A Generic Semantic Loss for Multimodal Image Registration 
