@@ -9,16 +9,16 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 ### 🔗 Minimal Example
 
 ```txt
-(ImpactModelsPath "/Data/Models/TS/M291_1_Layers.pt")
-(ImpactDimension 3)
-(ImpactNumberOfChannels 1)
-(ImpactPatchSize 5 5 5)
-(ImpactVoxelSize 1.5 1.5 1.5)
-(ImpactLayersMask 1)
-(ImpactSubsetFeatures 32)
-(ImpactPCA 0)
-(ImpactDistance "L2")
-(ImpactLayersWeight 1)
+(ImpactModelsPath0 "/Data/Models/TS/M291_1_Layers.pt")
+(ImpactDimension0 3)
+(ImpactNumberOfChannels0 1)
+(ImpactPatchSize0 5 5 5)
+(ImpactVoxelSize0 1.5 1.5 1.5)
+(ImpactLayersMask0 1)
+(ImpactSubsetFeatures0 32)
+(ImpactPCA0 0)
+(ImpactDistance0 "L2")
+(ImpactLayersWeight0 1)
 (ImpactMode "Jacobian")
 (ImpactGPU 0)
 (ImpactUseMixedPrecision "true")
@@ -199,19 +199,29 @@ IMPACT supports parallel use of multiple models and per-resolution customization
 
 #### 🌀 Multi-resolution Configuration
 
-You can specify different values for each resolution level using a flat list of space-separated entries:
+You can specify different parameter values for each resolution level by using indexed parameter names, such as ImpactModelsPath0, ImpactModelsPath1, etc.
 
 ```txt
-(ImpactModelsPath "/Data/Models/TS/M291_1_Layers.pt" "/Data/Models/SAM/Tiny_2_Layers.pt")
-(ImpactDimension 3 2)
-(ImpactNumberOfChannels 1 3)
-(ImpactPatchSize 5 5 5 29 29 29)
-(ImpactVoxelSize 3 3 3 1.5 1.5 1.5)
-(ImpactLayersMask "1" "01")
-(ImpactPCA 0 3)
-(ImpactSubsetFeatures 32 3)
-(ImpactDistance "L2" "L1")
-(ImpactLayersWeight 1 1)
+(ImpactModelsPath0 "/Data/Models/TS/M291_1_Layers.pt")
+(ImpactModelsPath1 "/Data/Models/SAM/Tiny_2_Layers.pt")
+(ImpactDimension0 3)
+(ImpactDimension1 2)
+(ImpactNumberOfChannels0 1)
+(ImpactNumberOfChannels1 3)
+(ImpactPatchSize0 5 5 5)
+(ImpactPatchSize1 29 29 29)
+(ImpactVoxelSize0 3 3 3)
+(ImpactVoxelSize1 1.5 1.5 1.5)
+(ImpactLayersMask0 "1")
+(ImpactLayersMask1 "01")
+(ImpactPCA0 0)
+(ImpactPCA1 3)
+(ImpactSubsetFeatures0 32)
+(ImpactSubsetFeatures1 3)
+(ImpactDistance0 "L2")
+(ImpactDistance1 "L1")
+(ImpactLayersWeight0 1)
+(ImpactLayersWeight1 1)
 (ImpactMode "Static" "Jacobian")
 (ImpactGPU 0 0)
 (ImpactUseMixedPrecision "true" "true")
@@ -219,29 +229,35 @@ You can specify different values for each resolution level using a flat list of 
 (ImpactWriteFeatureMaps "false" "false")
 ```
 
-This syntax is supported by all parameters.
+This indexed syntax is supported by all parameters except the following, which use Elastix's classic syntax with space-separated values per parameter (without indexing):
+
+```
+(ImpactMode "Static" "Jacobian")
+(ImpactGPU 0 0)
+(ImpactUseMixedPrecision "true" "true")
+(ImpactFeaturesMapUpdateInterval -1 -1)
+(ImpactWriteFeatureMaps "false" "false")
+```
 
 ⚠️ Note: If a parameter is not explicitly specified for a given resolution level, the value from the first level is automatically reused for the remaining levels.
-
-This allows you to simplify the configuration when the same value applies across multiple resolutions.
 
 ---
 
 #### 🧠 Multi-model Setup
 
-To assign multiple feature extractors, use space-separated lists enclosed in a string ("...") for each parameter:
+To assign multiple feature extractors, use space-separated lists for each parameter:
 
 ```txt
-(ImpactModelsPath "/Models/M850_8_Layers.pt /Models/MIND/R1D2.pt")
-(ImpactDimension "3 3")
-(ImpactNumberOfChannels "1 1")
-(ImpactPatchSize "5 5 5 7 7 7")
-(ImpactVoxelSize "1.5 1.5 1.5 6 6 6")
-(ImpactLayersMask "00000001 1")
-(ImpactPCA "0 0")
-(ImpactSubsetFeatures "64 16")
-(ImpactDistance "Dice L2")
-(ImpactLayersWeight "1.0 0.5")
+(ImpactModelsPath0 "/Models/M850_8_Layers.pt" "/Models/MIND/R1D2.pt")
+(ImpactDimension0 3 3)
+(ImpactNumberOfChannels0 1 1)
+(ImpactPatchSize0 5 5 5 7 7 7)
+(ImpactVoxelSize0 1.5 1.5 1.5 6 6 6)
+(ImpactLayersMask0 "00000001" "1")
+(ImpactPCA0 0 0)
+(ImpactSubsetFeatures0 64 16)
+(ImpactDistance0 "Dice" "L2")
+(ImpactLayersWeight0 1.0 0.5)
 ```
 
  ⚠️ Not model-specific: the following parameters apply globally and cannot be set per model:
@@ -259,8 +275,8 @@ To assign multiple feature extractors, use space-separated lists enclosed in a s
 You can assign **different models** to the fixed and moving images using:
 
 ```txt
-(FixedModelsPath "/Models/TS/M850_8_Layers.pt")
-(MovingModelsPath "/Models/MIND/R1D2.pt")
+(FixedModelsPath0 "/Models/TS/M850_8_Layers.pt")
+(MovingModelsPath0 "/Models/MIND/R1D2.pt")
 ```
 
 In this case, all model-specific parameters must be defined **independently** for each image using the `ImpactFixed*` and `ImpactMoving*` prefixes:
