@@ -202,6 +202,9 @@ Apply the appropriate preprocessing depending on the model:
   - Clip intensities to `[-1024, 276]` HU  
   - Then normalize by centering at `-370 HU` and scaling by `436.6`
 
+Complete example of how to run registration with IMPACT is provided in:  
+👉 [`run_impact_example.py`](run_impact_example.py)
+
 ## 🧠 Using IMPACT in PyTorch
 
 You can also use **IMPACT** directly as a PyTorch loss module.  
@@ -241,5 +244,3 @@ The available model names **follow the same folder hierarchy** as in the [Huggin
 📁 Cached under `~/.IMPACT/models/`  
 ⚙️ Handles resizing and channel replication  
 🧮 Computes a **weighted L1 semantic loss** between deep feature maps
-Computes a weighted L1 semantic loss between deep feature mapsmplete example of how to run registration with IMPACT is provided in:  
-👉 [`run_impact_example.py`](run_impact_example.py)
