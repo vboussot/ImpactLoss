@@ -1,15 +1,14 @@
 # 🔬 IMPACT: A Generic Semantic Loss for Multimodal Image Registration
 
-
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/SuperElastix/elastix/raw/main/LICENSE)
 [![Models](https://img.shields.io/badge/models-huggingface-orange)](https://huggingface.co/VBoussot/impact-torchscript-models)
 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
 
-<img src="logo.png" alt="IMPACT Logo" width="350" align="right">
+<img src="logo.png" alt="IMPACT Logo" width="250" align="right">
 
 **IMPACT** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
 
-<br><br><br>
+<br>
 
 📚 Reference
 
@@ -203,5 +202,44 @@ Apply the appropriate preprocessing depending on the model:
   - Clip intensities to `[-1024, 276]` HU  
   - Then normalize by centering at `-370 HU` and scaling by `436.6`
 
-A complete example of how to run registration with IMPACT is provided in:  
+## 🧠 Using IMPACT in PyTorch
+
+You can also use **IMPACT** directly as a PyTorch loss module.  
+The implementation is available in [`IMPACT.py`](IMPACT.py).
+
+```python
+from IMPACT import IMPACT
+import torch
+
+# Instantiate the IMPACT loss
+loss_fn = IMPACT(
+    model_name="TS/M730_2_Layers",  # TorchScript model on Hugging Face
+    shape=[0, 0, 0],                # [H, W, D] for explicit size, or [0, 0, 0] to disable resampling
+    in_channels=1,                  # Number of input channels
+    weights=[1, 1]                  # One weight per output layer
+)
+
+# Example 3D tensors
+A = torch.rand(1, 1, 128, 128, 128)
+B = torch.rand(1, 1, 128, 128, 128)
+
+# Compute similarity loss
+loss = loss_fn(A, B)
+print(loss)
+```
+
+### 📦 Features
+
+Automatically downloads TorchScript models from Hugging Face
+
+The available model names **follow the same folder hierarchy** as in the [Hugging Face repository](https://huggingface.co/VBoussot/impact-torchscript-models), e.g.:
+
+- `TS/M730_2_Layers`  
+- `SAM2.1/Tiny_2_Layers`  
+- `MIND/R2D2.pt`  
+
+📁 Cached under `~/.IMPACT/models/`  
+⚙️ Handles resizing and channel replication  
+🧮 Computes a **weighted L1 semantic loss** between deep feature maps
+Computes a weighted L1 semantic loss between deep feature mapsmplete example of how to run registration with IMPACT is provided in:  
 👉 [`run_impact_example.py`](run_impact_example.py)
