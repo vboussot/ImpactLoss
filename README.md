@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/SuperElastix/elastix/raw/main/LICENSE)
 [![Models](https://img.shields.io/badge/models-huggingface-orange)](https://huggingface.co/VBoussot/impact-torchscript-models)
 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
+ [![Paper](https://img.shields.io/badge/📌%20Paper-IMPACT-blue)](https://arxiv.org/abs/2503.24121)
 
 <img src="logo.png" alt="IMPACT Logo" width="250" align="right">
 
@@ -63,6 +64,37 @@ IMPACT has demonstrated strong generalization performance across multiple tasks 
 ## 🔬 Modular and Extensible Design
 
 Beyond its performance, IMPACT is designed as a modular platform that facilitates systematic experimentation with pretrained models, feature layers, and distance functions. This flexibility enables researchers to explore various feature extraction methods, fostering innovation and adaptability in multimodal image registration tasks.
+
+--- 
+
+## 🧭 Model Selection and Recommendations
+
+Model performance depends on both the **feature extraction strategy** and the **choice of extractor models**.  
+The following configurations were found to be optimal in the IMPACT study:
+
+| 🧪 Scenario | 🔧 Optimal Configuration | 💡 Rationale |
+|-------------|--------------------------|--------------|
+| **CT/CBCT** | **Early feature layers (2-Layers) + Jacobian mode** | Early layers of segmentation networks tend to **denoise** and **enhance anatomical structures** across modalities, improving **geometric alignment** and **robustness to artifacts**. |
+| **MR/CT** | **High-level feature layer (7-Layers) + Static mode + MIND** | Registration behaves more like **contour-based, segmentation-driven alignment**; **MIND** complements it by capturing **intra-organ**, leading to better anatomical consistency. |
+
+---
+
+### 📊 Model Insights
+
+| Model | Type | Typical Use | Comment |
+|--------|------|--------------|----------|
+| **TS/M730** | MR and CT (3D) | 🔹 **Default baseline** | Most stable and general-purpose model |
+| **SAM2.1** | Foundation (2D) | ⚡ Fast evaluation | Good generalization; suitable for quick or exploratory 2D experiments. |
+| **M258** | CT (3D, Lung vessels) | 🎯 Organ-specific | Models trained on the **target anatomical structure** (e.g., lung or vessels) provide **better local alignment** in the corresponding regions. |
+| **MIND** | Handcrafted descriptor | 🧩 Cross-modality | Complements contour-based methods by **recovering intra-organ information**, enhancing MR/CT alignment. |
+
+---
+
+### ✅ Summary
+
+> • **CT/CBCT → Early layers + Jacobian** — enhance structure visibility while reducing noise and artifacts.
+> • **MR/CT → High-level layers + Static + MIND** — emphasize anatomical contours and intra-organ consistency.  
+> • Use **`TS/M730_2_Layers`** as the **default model**, and **organ-specific models** (e.g., `M258`) for targeted anatomical regions.
 
 ---
 
