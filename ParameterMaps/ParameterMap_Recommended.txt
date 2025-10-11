@@ -24,14 +24,14 @@
 (ImpactLayersWeight1 1)
 
 (ImpactModelsPath2 "/Data/Models/TS/M730_2_Layers.pt")
-(ImpactDimension1 3)
+(ImpactDimension2 3)
 (ImpactNumberOfChannels2 1)
 (ImpactPatchSize2 11 11 11)
 (ImpactVoxelSize2 1.5 1.5 1.5)
 (ImpactLayersMask2 "01")
 (ImpactPCA2 0)
 (ImpactSubsetFeatures2 64)
-(ImpactDistance1 "L2")
+(ImpactDistance2 "L2")
 (ImpactLayersWeight2 1)
 
 (ImpactModelsPath3 "/Data/Models/TS/M730_2_Layers.pt")
