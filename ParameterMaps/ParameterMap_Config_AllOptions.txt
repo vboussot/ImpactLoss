@@ -98,3 +98,4 @@
 (DefaultPixelValue -1024)
 (ResultImageFormat "mha")
 
+(ITKTransformOutputFileNameExtension "itk.txt")
