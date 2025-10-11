@@ -69,3 +69,5 @@ if __name__ == "__main__":
 
     # Copy the resulting transformation file from the output directory to the current directory
     os.system("cp {}/TransformParameters.0.txt ./TransformParameters.0.txt".format(out_path))
+    if os.path.exists("{}/TransformParameters.0.itk.txt".format(out_path)):
+        os.system("cp {}/TransformParameters.0.itk.txt ./Transform.itk.txt".format(out_path))
