@@ -1,4 +1,4 @@
-# 🔬 IMPACT: A Generic Semantic Loss for Multimodal Image Registration
+# 🔬 IMPACT Reg: A Generic Semantic Loss for Multimodal Image Registration
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/SuperElastix/elastix/raw/main/LICENSE)
 [![Models](https://img.shields.io/badge/models-huggingface-orange)](https://huggingface.co/VBoussot/impact-torchscript-models)
@@ -7,13 +7,13 @@
 
 <img src="logo.png" alt="IMPACT Logo" width="250" align="right">
 
-**IMPACT** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
+**IMPACT Reg** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
 
 <br>
 
 📚 Reference
 
-> 🔗 IMPACT: A Generic Semantic Loss for Multimodal Image Registration 
+> 🔗 IMPACT : A Generic Semantic Loss for Multimodal Image Registration 
 > Valentin Boussot, Cédric Hémon, Jean-Claude Nunes, Jason Dowling, Simon Rouzé, Caroline Lafond, Anaïs Barateau, Jean-Louis Dillenseger
 > [arXiv:2503.24121](https://arxiv.org/abs/2503.24121) – _Under review_ 
 
