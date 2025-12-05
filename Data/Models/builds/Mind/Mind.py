@@ -120,14 +120,15 @@ class Mind2D(nn.Module):
         mind = torch.exp(-mind)
         return [mind]
 
-example = torch.zeros((1,1,128,128))
-for r in [1,2]:
-    for d in [1,2]:
-        model = Mind2D(r,d)
-        
-        traced_script_module = torch.jit.trace(model, example)
-        traced_script_module.save("./R{}D{}_2D.pt".format(r, d))
+if __name__ == "__main__":
+    example = torch.zeros((1,1,128,128))
+    for r in [1,2]:
+        for d in [1,2]:
+            model = Mind2D(r,d)
+            
+            traced_script_module = torch.jit.trace(model, example)
+            traced_script_module.save("./R{}D{}_2D.pt".format(r, d))
 
-        model = Mind3D(r,d)
-        traced_script_module = torch.jit.trace(model, example)
-        traced_script_module.save("./R{}D{}_3D.pt".format(r, d))
+            model = Mind3D(r,d)
+            traced_script_module = torch.jit.trace(model, example)
+            traced_script_module.save("./R{}D{}_3D.pt".format(r, d))
