@@ -35,7 +35,7 @@ The container expects the following files inside the `Data/` directory:
   Must contain the TorchScript-exported models used by the IMPACT metric (e.g., TotalSegmentator, SAM2.1, etc.).  
   👉 See [`Data/Models/README.md`](../Data/Models/README.md) for model download instructions.
 
-- `Data/FixedImage.mha` and `Data/MovingImage.mha` The images used for registration. These files can be provided in either .mha or .nii.gz format.
+- `Data/Fixed_image.mha` and `Data/Moving_image.mha` The images used for registration. These files can be provided in either .mha or .nii.gz format.
 
   ⚠️ **Preprocessing Recommendation**  
   Input images must be **preprocessed consistently with the training of the selected model**.  
