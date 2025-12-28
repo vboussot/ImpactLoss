@@ -100,17 +100,13 @@ The following configurations were found to be optimal in the IMPACT study:
 
 ## 🚀 Quick Start with Docker
 
-You can quickly test the IMPACT metric using the provided Docker environment:
+The easiest way to test **IMPACT** is to use the prebuilt Docker image from Docker Hub:
 
 ```bash
-git clone https://github.com/vboussot/ImpactLoss.git
-cd ImpactLoss
+docker pull vboussot/elastix_impact
 ```
 
-Build the Docker image
-```bash
-docker build -t elastix_impact Docker
-```
+👉 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
 
 Then, run Elastix with your own data:
 
@@ -128,16 +124,50 @@ Make sure that the `Data/` folder contains:
 
 See [`Docker/README.md`](Docker/README.md) for full details and usage examples.
 
-💡 You can also directly pull the prebuilt image from Docker Hub:
+
+If you want to build the image yourself:
+
 ```bash
-docker pull vboussot/elastix_impact
+git clone https://github.com/vboussot/ImpactLoss.git
+cd ImpactLoss
 ```
 
-👉 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
+Build the Docker image
+```bash
+docker build -t elastix_impact Docker
+```
 
 ---
 
-## 🛠️ Manual Build Instructions (without Docker)
+## 📦 Installation (Prebuilt Binaries)
+
+Precompiled **Elastix + IMPACT** binaries are available for **Linux, Windows, and macOS**
+(CPU and CUDA variants) in the ImpactElastix
+**[release](https://github.com/vboussot/ImpactElastix/releases/tag/1.0.0)**.
+
+You can choose between two installation methods:
+
+- **Direct download** — manually download the binaries from the release.
+- **Automatic installation (recommended)** — use the provided installer `install.py`.
+
+The installer automatically:
+- detects your operating system and GPU,
+- selects the appropriate CPU or CUDA (12.8) binaries,
+- downloads the correct Elastix release,
+- downloads **LibTorch 2.8.0 + cu128** when required,
+- ensures all shared libraries are visible at runtime.
+
+---
+
+### ⚠️ CUDA requirements
+- **Minimum NVIDIA driver**
+  - Linux ≥ **570.26**
+  - Windows ≥ **570.65**
+- The **CUDA Toolkit is not required** (driver only).
+
+---
+   
+## 🛠️ Manual Build Instructions
 
 Build Elastix with IMPACT support directly on your machine.
 
@@ -179,6 +209,7 @@ cd ImpactElastix-build
 cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ \
       -DITK_DIR=../ITK-install/lib/cmake/ITK-6.0/ \
       -DCMAKE_INSTALL_PREFIX=../ImpactElastix-install \
+      -DUSE_ImpactMetric=ON \
       ../ImpactElastix
 ```
 
