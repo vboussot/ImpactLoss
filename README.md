@@ -154,7 +154,7 @@ The installer automatically:
 - detects your operating system and GPU,
 - selects the appropriate CPU or CUDA (12.8) binaries,
 - downloads the correct Elastix release,
-- downloads **LibTorch 2.8.0 + cu128** when required,
+- downloads **LibTorch 2.80** with **CUDA 12.8 or cpu** when required,
 - ensures all shared libraries are visible at runtime.
 
 ---
