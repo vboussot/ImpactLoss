@@ -22,11 +22,11 @@ from tqdm import tqdm
 # CUDA assets do NOT bundle LibTorch (too large for GitHub limits).
 # -----------------------------------------------------------------------------
 ELX_ASSET_TEMPLATE = {
-    ("Linux", "x86_64", "cpu"): "elastix-impact-linux-x86_64-shared-with-deps-cpu.zip",
+    ("Linux", "x86_64", "cpu"): "elastix-impact-linux-x86_64-cpu.zip",
     ("Linux", "x86_64", "cu128"): "elastix-impact-linux-x86_64-cu128.zip",
-    ("Windows", "x86_64", "cpu"): "elastix-impact-windows-x86_64-shared-with-deps-cpu.zip",
+    ("Windows", "x86_64", "cpu"): "elastix-impact-windows-x86_64-cpu.zip",
     ("Windows", "x86_64", "cu128"): "elastix-impact-windows-x86_64-cu128.zip",
-    ("Darwin", "x86_64", "cpu"): "elastix-impact-macos-14-x86_64-shared-with-deps-cpu.zip",
+    ("Darwin", "x86_64", "cpu"): "elastix-impact-macos-14-x86_64-cpu.zip",
 }
 
 # -----------------------------------------------------------------------------
@@ -39,6 +39,21 @@ ELX_ASSET_TEMPLATE = {
 # -----------------------------------------------------------------------------
 
 LIBTORCH_URL = {
+    (
+        "Linux",
+        "x86_64",
+        "cpu",
+    ): "https://download.pytorch.org/libtorch/cpu/libtorch-shared-with-deps-2.8.0%2Bcpu.zip",
+    (
+        "Windows",
+        "x86_64",
+        "cpu",
+    ): "https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.8.0%2Bcpu.zip",
+    (
+        "Darwin",
+        "arm64",
+        "cpu",
+    ): "https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.8.0%2Bcpu.zip",
     (
         "Linux",
         "x86_64",
@@ -180,8 +195,8 @@ def main() -> None:
     if os_name not in ("Linux", "Windows", "Darwin"):
         raise NameError(f"Unsupported OS: {os_name}")
 
-    if arch != "x86_64":
-        raise NameError(f"Unsupported arch: {arch} (expected x86_64)")
+    if arch not in  ("x86_64", "arm64"):
+        raise NameError(f"Unsupported arch: {arch} (expected x86_64, arm64)")
 
     flavor = "cpu"
     if args.force_cuda:
@@ -226,28 +241,23 @@ def main() -> None:
             if p.exists():
                 p.chmod(p.stat().st_mode | stat.S_IEXEC)
 
-    if flavor != "cpu":
-        # ---------------------------------------------------------------------
-        # CUDA build:
-        # - Download matching LibTorch cu128
-        # - Extract it
-        # - Move runtime libraries to a location visible to the dynamic loader
-        #
-        # Linux / macOS : prefix/lib
-        # Windows       : prefix (next to elastix.exe)
-        # ---------------------------------------------------------------------
-        lt_url = LIBTORCH_URL[key]
-        lt_archive = prefix / Path(lt_url).name
-        download_file(lt_url, lt_archive)
-        extract_archive(lt_archive, prefix)
-        for p in (prefix / "libtorch" / "lib").iterdir():
-            shutil.move(p, (prefix if os_name == "Windows" else prefix / "lib") / p.name)
-        shutil.rmtree(prefix / "libtorch")
-        if os_name == "Linux":
-            shutil.copy(prefix / "lib" / "libcudart-c3a75b33.so.12", prefix / "lib" / "libcudart.so.12")
-
-    # Installation completed successfully
-    return 0
+    # ---------------------------------------------------------------------
+    # - Download matching LibTorch 12.8 with or without CUDA 12.8
+    # - Extract it
+    # - Move runtime libraries to a location visible to the dynamic loader
+    #
+    # Linux / macOS : prefix/lib
+    # Windows       : prefix (next to elastix.exe)
+    # ---------------------------------------------------------------------
+    lt_url = LIBTORCH_URL[key]
+    lt_archive = prefix / Path(lt_url).name
+    download_file(lt_url, lt_archive)
+    extract_archive(lt_archive, prefix)
+    for p in (prefix / "libtorch" / "lib").iterdir():
+        shutil.move(p, (prefix if os_name == "Windows" else prefix / "lib") / p.name)
+    shutil.rmtree(prefix / "libtorch")
+    if os_name == "Linux" and flavor == "cu128":
+        shutil.copy(prefix / "lib" / "libcudart-c3a75b33.so.12", prefix / "lib" / "libcudart.so.12")
 
 
 if __name__ == "__main__":
