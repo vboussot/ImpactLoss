@@ -195,7 +195,7 @@ def main() -> None:
     if os_name not in ("Linux", "Windows", "Darwin"):
         raise NameError(f"Unsupported OS: {os_name}")
 
-    if arch not in  ("x86_64", "arm64"):
+    if arch not in ("x86_64", "arm64"):
         raise NameError(f"Unsupported arch: {arch} (expected x86_64, arm64)")
 
     flavor = "cpu"
@@ -254,7 +254,9 @@ def main() -> None:
     download_file(lt_url, lt_archive)
     extract_archive(lt_archive, prefix)
     for p in (prefix / "libtorch" / "lib").iterdir():
-        shutil.move(p, (prefix if os_name == "Windows" else prefix / "lib") / p.name)
+        if ".so" in p.name or ".dll" in p.name or ".dylib" in p.name:
+            shutil.move(p, (prefix if os_name == "Windows" else prefix / "lib") / p.name)
+
     shutil.rmtree(prefix / "libtorch")
     if os_name == "Linux" and flavor == "cu128":
         shutil.copy(prefix / "lib" / "libcudart-c3a75b33.so.12", prefix / "lib" / "libcudart.so.12")
