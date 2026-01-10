@@ -114,7 +114,7 @@ Then, run Elastix with your own data:
 docker run --rm --gpus all \
   -v "./Data:/Data" \
   -v "./Out:/Out" \
-  elastix_impact
+  vboussot/elastix_impact
 ```
 
 Make sure that the `Data/` folder contains:
