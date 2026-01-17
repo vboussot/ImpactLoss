@@ -1,10 +1,21 @@
 
 import torch
 import numpy as np
-import SimpleITK as sitk
 import torch.nn.functional as F
 import torch.nn as nn
 
+class Normalize(torch.nn.Module):
+
+    def __init__(self) -> None:
+        super().__init__()
+        
+    def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
+        if stats.shape[0] == 4:
+            return (x - stats[0]) / (stats[1] - stats[0] + 1e-6)
+        else:
+            vmin = x.min()
+            return (x - vmin) / (x.max() - vmin + 1e-6)
+        
 def pdist_squared3D(x):
     xx = (x**2).sum(dim=1).unsqueeze(2)
     yy = xx.permute(0, 2, 1)
@@ -44,11 +55,13 @@ class Mind3D(torch.nn.Module):
 
         self.rpad1 = nn.ReplicationPad3d(self.dilation)
         self.rpad2 = nn.ReplicationPad3d(self.radius)
+        self.normalize = Normalize()
     
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
+    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+        x = self.normalize(x, stats)
         ssd = F.avg_pool3d(
             self.rpad2(
-                (self.conv1(self.rpad1(input)) - self.conv2(self.rpad1(input))) ** 2
+                (self.conv1(self.rpad1(x)) - self.conv2(self.rpad1(x))) ** 2
             ),
             self.radius * 2 + 1, stride=1
         )  
@@ -105,8 +118,10 @@ class Mind2D(nn.Module):
 
         self.rpad1 = nn.ReplicationPad2d(dilation)
         self.rpad2 = nn.ReplicationPad2d(radius)
-
-    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        self.normalize = Normalize()
+        
+    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+        x = self.normalize(x, stats)
         ssd = F.avg_pool2d(
             self.rpad2((self.conv1(self.rpad1(x)) - self.conv2(self.rpad1(x))) ** 2),
             self.radius * 2 + 1,
@@ -121,14 +136,13 @@ class Mind2D(nn.Module):
         return [mind]
 
 if __name__ == "__main__":
-    example = torch.zeros((1,1,128,128))
     for r in [1,2]:
         for d in [1,2]:
             model = Mind2D(r,d)
             
-            traced_script_module = torch.jit.trace(model, example)
+            traced_script_module = torch.jit.script(model)
             traced_script_module.save("./R{}D{}_2D.pt".format(r, d))
 
             model = Mind3D(r,d)
-            traced_script_module = torch.jit.trace(model, example)
+            traced_script_module = torch.jit.script(model)
             traced_script_module.save("./R{}D{}_3D.pt".format(r, d))

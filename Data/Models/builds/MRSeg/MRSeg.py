@@ -37,169 +37,35 @@ class Head(torch.nn.Module):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
          return torch.nn.functional.one_hot(torch.argmax(self.softmax(self.Conv(input)), dim=1), self.nb_class).permute((0,4,1,2,3))
 
+class Standardize(torch.nn.Module):
 
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
+        if stats.shape[0] == 4:
+            return (x-stats[2])/stats[3]
+        else:
+            return (x-x.mean())/x.std()
+        
 def crop_to_match(tensor, target_tensor):
     diff_x = tensor.size(2) - target_tensor.size(2)
     diff_y = tensor.size(3) - target_tensor.size(3)
     diff_z = tensor.size(4) - target_tensor.size(4)
     return tensor[:, :, torch.ceil(diff_x / 2) : tensor.size(2)-(diff_x // 2), torch.ceil(diff_y / 2) : tensor.size(3)-(diff_y // 2), torch.ceil(diff_z / 2) : tensor.size(4)-(diff_z // 2)]
 
-class UnetCPP_1(torch.nn.Module):
+class UnetCPP(torch.nn.Module):
 
-    def __init__(self) -> None:
+    def __init__(self, nb_class: int) -> None:
         super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
+        self.normalize  = Standardize()
 
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        return [output0]
-
-class UnetCPP_2(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-
-        return [output0, output1]
-
-class UnetCPP_3(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-
-        return [output0, output1, output2]
-
-class UnetCPP_4(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-        output3 = self.DownConvBlock_3(output2)
-
-        return [output0, output1, output2, output3]
-
-class UnetCPP_5(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-        output3 = self.DownConvBlock_3(output2)
-        output4 = self.DownConvBlock_4(output3)
-
-        return [output0, output1, output2, output3, output4]
-    
-class UnetCPP_6(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
         self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
         self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
         self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
         self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
         self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
         self.DownConvBlock_5 = ConvBlock(in_channels=320, out_channels=320, downsample=True, last=True)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-        output3 = self.DownConvBlock_3(output2)
-        output4 = self.DownConvBlock_4(output3)
-        output5 = self.DownConvBlock_5(output4)
-        return [output0, output1, output2, output3, output4, output5]
-
-class UnetCPP_7(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
-        self.DownConvBlock_5 = ConvBlock(in_channels=320, out_channels=320, downsample=True, last=True)
-
-        self.Upsample_4 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=320, kernel_size=(1,2,2), stride=(1,2,2))        
-        self.UpConvBlock_4 = ConvBlock(in_channels=320*2, out_channels=320)
-        
-        self.Upsample_3 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=256, kernel_size=2, stride=2)
-        self.UpConvBlock_3 = ConvBlock(in_channels=256*2, out_channels=256)
-        
-        self.Upsample_2 = torch.nn.ConvTranspose3d(in_channels=256, out_channels=128, kernel_size=2, stride=2)
-        self.UpConvBlock_2 = ConvBlock(in_channels=128*2, out_channels=128)
-        
-        self.Upsample_1 = torch.nn.ConvTranspose3d(in_channels=128, out_channels=64, kernel_size=2, stride=2)
-        self.UpConvBlock_1 = ConvBlock(in_channels=64*2, out_channels=64)
-        
-        self.Upsample_0 = torch.nn.ConvTranspose3d(in_channels=64, out_channels=32, kernel_size=2, stride=2)        
-        self.UpConvBlock_0 = ConvBlock(in_channels=32*2, out_channels=32)
-
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-        output3 = self.DownConvBlock_3(output2)
-        output4 = self.DownConvBlock_4(output3)
-        output5 = self.DownConvBlock_5(output4)
-        
-        output = self.Upsample_4(output5)
-        output = self.UpConvBlock_4(torch.cat([crop_to_match(output, output4), output4], dim=1))
-        
-        output = self.Upsample_3(output)
-        output = self.UpConvBlock_3(torch.cat([crop_to_match(output, output3), output3], dim=1))
-
-        output = self.Upsample_2(output)
-        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output2), output2], dim=1))
-
-        output = self.Upsample_1(output)
-        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output1), output1], dim=1))
-
-        output = self.Upsample_0(output)
-        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output0), output0], dim=1))
-
-        return [output0, output1, output2, output3, output4, output5, output]
-    
-class UnetCPP_8(torch.nn.Module):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
-        self.DownConvBlock_5 = ConvBlock(in_channels=320, out_channels=320, downsample=True, last=True)
-
 
         self.Upsample_4 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=320, kernel_size=(1,2,2), stride=(1,2,2))        
         
@@ -216,32 +82,49 @@ class UnetCPP_8(torch.nn.Module):
         
         self.Upsample_0 = torch.nn.ConvTranspose3d(in_channels=64, out_channels=32, kernel_size=2, stride=2)        
         self.UpConvBlock_0 = ConvBlock(in_channels=32*2, out_channels=32)
-        self.Head_0 = Head(32, 41)
+        self.Head_0 = Head(32, nb_class)
 
-    def forward(self, input: torch.Tensor) -> list[torch.Tensor]:
-        output0 = self.DownConvBlock_0(input)
-        output1 = self.DownConvBlock_1(output0)
-        output2 = self.DownConvBlock_2(output1)
-        output3 = self.DownConvBlock_3(output2)
-        output4 = self.DownConvBlock_4(output3)
-        output5 = self.DownConvBlock_5(output4)
+    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+        nb_layers = nb_layers_tensor.item()
+        x = self.normalize(x, stats)
+
+        output_0 = self.DownConvBlock_0(x)
+        if nb_layers == 1:
+            return [output_0]
+        output_1 = self.DownConvBlock_1(output_0)
+        if nb_layers == 2:
+            return [output_0, output_1]
+        output_2 = self.DownConvBlock_2(output_1)
+        if nb_layers == 3:
+            return [output_0, output_1, output_2]
+        output_3 = self.DownConvBlock_3(output_2)
+        if nb_layers == 4:
+            return [output_0, output_1, output_2, output_3]
+        output_4 = self.DownConvBlock_4(output_3)
+        if nb_layers == 5:
+            return [output_0, output_1, output_2, output_3, output_4]
+        output_5 = self.DownConvBlock_5(output_4)
+        if nb_layers == 6:
+            return [output_0, output_1, output_2, output_3, output_4, output_5]
         
-        output = self.Upsample_4(output5)
-        output = self.UpConvBlock_4(torch.cat([crop_to_match(output, output4), output4], dim=1))
+        output = self.Upsample_4(output_5)
+        output = self.UpConvBlock_4(torch.cat([crop_to_match(output, output_4), output_4], dim=1))
         
         output = self.Upsample_3(output)
-        output = self.UpConvBlock_3(torch.cat([crop_to_match(output, output3), output3], dim=1))
+        output = self.UpConvBlock_3(torch.cat([crop_to_match(output, output_3), output_3], dim=1))
 
         output = self.Upsample_2(output)
-        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output2), output2], dim=1))
+        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output_2), output_2], dim=1))
 
         output = self.Upsample_1(output)
-        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output1), output1], dim=1))
+        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output_1), output_1], dim=1))
 
         output = self.Upsample_0(output)
-        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output0), output0], dim=1))
+        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output_0), output_0], dim=1))
 
-        return [output0, output1, output2, output3, output4, output5, output, self.Head_0(output)]
+        if nb_layers == 7:            
+            return [output_0, output_1, output_2, output_3, output_4, output_5, output]    
+        return [output_0, output_1, output_2, output_3, output_4, output_5, output, self.Head_0(output)]
 
 
 def download(url: str) -> dict[str, torch.Tensor]:
@@ -262,25 +145,18 @@ def download(url: str) -> dict[str, torch.Tensor]:
     shutil.rmtree(url.split("/")[-1].replace(".zip", ""))
     return state_dict
 
-def convert_torchScript_full(model_name: str, model: torch.nn.Module, type: int, url: str):
+def convert_torchScript_full(model_name: str, model: torch.nn.Module, url: str):
     state_dict = download(url)
     tmp = {}
 
     model_state_dict_key = model.state_dict().keys()
-    with open("Destination_Unet_{}.txt".format(type)) as f2:
+    with open("Destination_Unet_1.txt") as f2:
         it = iter(state_dict.keys())
         for l1 in f2:
             key = next(it)
             while "decoder.seg_layers" in key:
-                if type == 1:
-                    if "decoder.seg_layers.4" in key :
-                        break
-                if type == 2:
-                    if "decoder.seg_layers.3"  in key:
-                        break
-                if type == 3:
-                    if "decoder.seg_layers.2" in key:
-                        break
+                if "decoder.seg_layers.4" in key :
+                    break
                 key = next(it)
                     
             while "all_modules" in key or "decoder.encoder" in key:
@@ -292,14 +168,9 @@ def convert_torchScript_full(model_name: str, model: torch.nn.Module, type: int,
     model.load_state_dict(tmp)
 
     sm = torch.jit.script(model)
-    sm.save(model_name+".pt")
+    sm.save(model_name)
 
-url = "https://github.com/hhaentze/MRSegmentator/releases/download/"
+weight_url = "https://github.com/hhaentze/MRSegmentator/releases/download/v1.2.0/weights.zip"
        
-models = {"MRSeg" : ([UnetCPP_1(), UnetCPP_2(), UnetCPP_3(), UnetCPP_4(), UnetCPP_5(), UnetCPP_6(), UnetCPP_7(), UnetCPP_8()], url+"v1.2.0/weights.zip")}
-
 if __name__ == "__main__":
-    for name, setup in models.items():
-        models, weight_url = setup
-        for l, model in enumerate(models):
-            convert_torchScript_full(f"{name}_{l+1}_Layers", model, 1, weight_url)
+    convert_torchScript_full("MRSeg.pt", UnetCPP(41), weight_url)

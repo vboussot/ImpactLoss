@@ -37,23 +37,6 @@ The container expects the following files inside the `Data/` directory:
 
 - `Data/Fixed_image.mha` and `Data/Moving_image.mha` The images used for registration. These files can be provided in either .mha or .nii.gz format.
 
-  ⚠️ **Preprocessing Recommendation**  
-  Input images must be **preprocessed consistently with the training of the selected model**.  
-  For TotalSegmentator-based models, images should be in **canonical orientation**.
-
-  Apply the appropriate preprocessing depending on the model:
-
-  - **ImageNet-based models** (e.g., SAM2.1, DINOv2):  
-    - Normalize intensities to [0, 1]  
-    - Then standardize with mean `0.485` and standard deviation `0.229` 
-
-  - **MRI models** (e.g., TS/M730–M733):  
-    - Standardize intensities to zero mean and unit variance  
-
-  - **CT models** (e.g., all other TotalSegmentator variants, MIND):  
-    - Clip intensities to `[-1024, 276]` HU  
-    - Then normalize by centering at `-370 HU` and scaling by `436.6`
-
 - `Data/ParameterMap.txt`  
   Elastix parameter file with the configuration for Impact.  
   👉 See [`ParameterMaps/README.md`](../ParameterMaps/README.md) for detailed configuration examples.

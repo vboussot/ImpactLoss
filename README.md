@@ -249,21 +249,11 @@ Elastix is executed as usual, using a parameter map configured to use the IMPACT
 👉 Refer to [`ParameterMaps/README.md`](ParameterMaps/README.md) for detailed configuration examples.
 
 ⚠️ **Preprocessing Recommendation**  
-Input images must be **preprocessed consistently with the training of the selected model**.  
-For TotalSegmentator-based models, images should be in **canonical orientation**.
+Input images must **not** be preprocessed for intensity normalization before being passed to IMPACT.  
+All images must be provided in their **raw, native intensity space** (e.g., HU for CT, native values for MRI).
 
-Apply the appropriate preprocessing depending on the model:
-
-- **ImageNet-based models** (e.g., SAM2.1, DINOv2):  
-  - Normalize intensities to [0, 1]  
-  - Then standardize with mean `0.485` and standard deviation `0.229` 
-
-- **MRI models** (e.g., TS/M730–M733):  
-  - Standardize intensities to zero mean and unit variance  
-
-- **CT models** (e.g., all other TotalSegmentator variants, MIND):  
-  - Clip intensities to `[-1024, 276]` HU  
-  - Then normalize by centering at `-370 HU` and scaling by `436.6`
+Each model is responsible for applying the same normalization strategy that was used during its training,
+directly inside its `forward` method.
 
 Complete example of how to run registration with IMPACT is provided in:  
 👉 [`run_impact_example.py`](run_impact_example.py)
@@ -300,9 +290,9 @@ Automatically downloads TorchScript models from Hugging Face
 
 The available model names **follow the same folder hierarchy** as in the [Hugging Face repository](https://huggingface.co/VBoussot/impact-torchscript-models), e.g.:
 
-- `TS/M730_2_Layers`  
-- `SAM2.1/Tiny_2_Layers`  
-- `MIND/R2D2.pt`  
+- `TS/M730.pt`  
+- `SAM2.1/SAM2.1_Tiny.pt`  
+- `MIND/R2D2_2D.pt`  
 
 📁 Cached under `~/.IMPACT/models/`  
 ⚙️ Handles resizing and channel replication  

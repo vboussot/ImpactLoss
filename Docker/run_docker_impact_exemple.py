@@ -3,30 +3,6 @@ import numpy as np
 import os
 import time
 
-def standardize_MRI(image: sitk.Image) -> sitk.Image:    
-    data = sitk.GetArrayFromImage(image)
-    data = (data-data.mean())/data.std()
-    result = sitk.GetImageFromArray(data)
-    result.CopyInformation(image)
-    return result
-
-def clip_and_standardize_CT(image: sitk.Image) -> sitk.Image:    
-    data = sitk.GetArrayFromImage(image)
-    data[data < -1024] = -1024
-    data[data > 276.0] = 276
-    data = (data-(-370.00039267657144))/436.5998675471528
-    result = sitk.GetImageFromArray(data)
-    result.CopyInformation(image)
-    return result
-
-def standardize_ImageNet(image: sitk.Image) -> sitk.Image:
-    data = sitk.GetArrayFromImage(image)
-    data = (data-np.min(data))/(np.max(data)-np.min(data))
-    data = (data-0.485)/0.229
-    result = sitk.GetImageFromArray(data)
-    result.CopyInformation(image)
-    return result
-
 def writeLandmarks(landmarks: np.ndarray, filename: str):
     with open(filename, "w") as f:
         f.write("point\n") 
@@ -49,12 +25,10 @@ if __name__ == "__main__":
     # moving_mask = sitk.ReadImage("...")  # Uncomment if you have a moving mask
     # moving_landmarks = writeLandmarks(np.zeros((100, 3)), "{}Moving_landmarks.mha".format(data_path))  # Uncomment if you have moving landmarks
 
-    # Normalize or standardize the images based on the model type and write them to the data directory
-    # For SAM2.1, use clip_and_standardize_ImageNet, 
-    # For TS/M730, TS/M731, TS/M732, TS/M733, use clip_and_standardize_MRI, 
-    # For other models, use clip_and_standardize_CT
-    sitk.WriteImage(standardize_ImageNet(fixed_image), "{}/Fixed_image.mha".format(data_path))  # Standardize fixed image
-    sitk.WriteImage(standardize_ImageNet(moving_image), "{}/Moving_image.mha".format(data_path))  # Standardize moving image
+    # Normalization or standardization is the responsibility of the model;
+    # there is no need to normalize the image here. 
+    sitk.WriteImage(fixed_image, "{}/Fixed_image.mha".format(data_path))  # Standardize fixed image
+    sitk.WriteImage(moving_image, "{}/Moving_image.mha".format(data_path))  # Standardize moving image
 
     # Copy the example parameter map configuration to the data directory
     os.system("cp ../ParameterMaps/ParameterMap_TS_2_Layers_Jacobian.txt {}/ParameterMap.txt".format(data_path))

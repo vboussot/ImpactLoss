@@ -14,8 +14,6 @@ We provide a collection of TorchScript-exported feature extractors derived from 
 - **Anatomix**
 - **MIND** (handcrafted features)
 
-Each model is available in multiple versions, corresponding to different feature extraction layers (e.g., `_1_Layers.pt`, `_2_Layers.pt`, etc.), allowing fine-grained control over the level of semantic abstraction used.
-
 You can selectively download individual models directly from Hugging Face:
 
 🔗 [https://huggingface.co/VBoussot/impact-torchscript-models](https://huggingface.co/VBoussot/impact-torchscript-models)
@@ -35,7 +33,7 @@ This will download and organize all models into subfolders (`TS/`, `SAM2.1/`, `M
 Once the models are in place, you can reference them in your Elastix parameter map like this:
 
 ```txt
-(ImpactModelsPath "/Data/Models/SAM2.1/Tiny_1_Layers.pt")
+(ImpactModelsPath "/Data/Models/TS/M291.pt")
 ```
 
 ## 🧪 Create Your Own Pretrained Model
@@ -51,12 +49,31 @@ The **only constraint** is:
 Any architecture is allowed, CNNs, transformers, or hybrid models, as long as this input/output format is respected.
 ⚠️ Note: To use a model in Jacobian mode, it must be fully differentiable to support gradient backpropagation.
 
+Image normalization or standardization is the responsibility of the model.
+IMPACT does not apply any intensity preprocessing before inference. Each model must handle its own input normalization inside its `forward` method.
+
 ### 🧑‍💻 Example
 
 If you have a trained model, you can convert it to TorchScript format like this:
 
 ```python
 import torch
+
+class Normalize(torch.nn.Module):
+
+    def __init__(self) -> None:
+        super().__init__()
+            
+    def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
+        # stats = (min, max, mean, std)
+        if stats.shape[0] == 4:
+          minv = stats[0]
+          maxv = stats[1]
+        else:
+          minv = x.min()
+          maxv = x.max()
+
+        return (x - minv) / (maxv - minv + 1e-6)
 
 class Model(torch.nn.Module):
     def __init__(self):
@@ -65,9 +82,13 @@ class Model(torch.nn.Module):
         self.relu_0 = torch.nn.ReLU()
         self.conv_1 = torch.nn.Conv3d(in_channels=8, out_channels=16, kernel_size=3, padding=1)
         self.relu_1 = torch.nn.ReLU()
-        
-    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        self.normalize = Normalize()
+
+    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([2]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+        x = self.normalize(x, stats)
         layer_0 = self.relu_0(self.conv_0(x))
+        if nb_layers == 1:
+          return [layer_0]
         layer_1 = self.relu_1(self.conv_1(layer_0))
         return [layer_0, layer_1]
 
@@ -76,8 +97,7 @@ model = Model()  # Example of a 3D model with 2 extracted layers
 model.load_state_dict(torch.load("Model_weights.pt"), strict=True)
 
 # Create TorchScript model
-example_input = torch.zeros((1, 1, 5, 5, 5))  # Input size matching the receptive field of the model
-scripted_model = torch.jit.trace(model, example_input)
+scripted_model = torch.jit.script(model)
 scripted_model.save("Data/Models/CustomModel/Custom_Model_Torchscript.pt")
 ```
 

@@ -13,20 +13,16 @@ declare -A MODELS
 MODELS["Anatomix"]="Anatomix.pt"
 
 # DinoV2
-MODELS["DinoV2"]="Small_1_Layers.pt"
+MODELS["DinoV2"]="Small.pt"
 
 # MIND
-MODELS["MIND"]="R1D1.pt R1D2.pt R2D1.pt R2D2.pt"
+MODELS["MIND"]="R1D1_2D.pt R1D2_2D.pt R2D1_2D.pt R2D2_2D.pt R1D1_3D.pt R1D2_3D.pt R2D1_3D.pt R2D2_3D.pt"
 
 # SAM2.1
-MODELS["SAM2.1"]="Tiny_1_Layers.pt Tiny_2_Layers.pt Tiny_3_Layers.pt Tiny_4_Layers.pt Tiny_5_Layers.pt"
+MODELS["SAM2.1"]="SAM2.1_Tiny.pt SAM2.1_Small.pt"
 
 # TotalSegmentator (TS)
-MODELS["TS"]="$(for m in M258 M291 M292 M293 M294 M295 M297 M298 M730 M731 M732 M733; do
-  for l in {1..8}; do
-    echo -n "${m}_${l}_Layers.pt "
-  done
-done)"
+MODELS["TS"]="M258.pt M291.pt M292.pt M293.pt M294.pt M295.pt M297.pt M298.pt M730.pt M731.pt M732.pt M733.pt M850.pt M851.pt M852.pt M853.pt"
 
 # =============================================
 

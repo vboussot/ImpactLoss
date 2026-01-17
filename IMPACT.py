@@ -1,18 +1,18 @@
-# SPDX-License-Identifier: Apache-2.0
-#
 # Copyright (c) 2025 Valentin Boussot
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#       http://www.apache.org/licenses/LICENSE-2.0.txt
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
 
 import torch
 import shutil
@@ -84,6 +84,16 @@ class IMPACT(torch.nn.Module):
     def preprocessing(self, tensor: torch.Tensor) -> torch.Tensor:
         """
         Resize and adjust the tensor channels to match model expectations.
+
+        Note:
+            This method does not perform any intensity normalization.
+            Input images must be provided in their raw (non-normalized) form,
+            i.e., in their original intensity space (e.g., HU for CT, native values for MRI).
+
+            If images have already been normalized upstream, they must be de-normalized
+            before being passed to this pipeline.
+
+            Intensity normalization or standardization is the responsibility of the IMPACT models.
         """
         if self.shape is not None and not all(
             tensor.shape[-i - 1] == size for i, size in enumerate(reversed(self.shape[2:]))
@@ -175,7 +185,7 @@ def download_url(model_name: str, url: str) -> str:
 
 if __name__ == "__main__":
     # Example usage with a 3D model applied to a 3D volume
-    loss = IMPACT("TS/M730_2_Layers", [0,0,0], 1, [1,1])
+    loss = IMPACT("TS/M730", [0,0,0], 1, [1,1])
     A = torch.rand(1,1,128,128,128)
     B = torch.rand(1,1,128,128,128)
     l = loss(A,B)
