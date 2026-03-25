@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-CMD="/lib/elastix-install/bin/elastix"
+CMD="elastix"
 
 if [ -f "/Data/Fixed_image.mha" ]; then
     FIXED="/Data/Fixed_image.mha"
