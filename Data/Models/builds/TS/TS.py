@@ -47,13 +47,13 @@ class ClipAndNormalize(torch.nn.Module):
 
     def __init__(self) -> None:
         super().__init__()
-        self.register_buffer("clip_min", torch.empty(1))
-        self.register_buffer("clip_max", torch.empty(1))
+        #self.register_buffer("clip_min", torch.empty(1))
+        #self.register_buffer("clip_max", torch.empty(1))
         self.register_buffer("mean", torch.empty(1))
         self.register_buffer("std", torch.empty(1))
 
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        x = torch.clamp(x, self.clip_min, self.clip_max)
+        #x = torch.clamp(x, self.clip_min, self.clip_max)
         return (x - self.mean) / (self.std)
 
 
@@ -397,8 +397,8 @@ def convert_torchScript_full(model_name: str, model: torch.nn.Module, type: int,
                 key = next(it)
             tmp[l1.replace("\n", "")] = state_dict[key]
     if not mri:
-        tmp["normalize.clip_min"] = state_dict["clip_min"]
-        tmp["normalize.clip_max"] = state_dict["clip_max"]
+        #tmp["normalize.clip_min"] = state_dict["clip_min"]
+        #tmp["normalize.clip_max"] = state_dict["clip_max"]
         tmp["normalize.mean"] = state_dict["mean"]
         tmp["normalize.std"] = state_dict["std"]
         

@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 CMD="elastix"
 
@@ -21,22 +21,23 @@ else
     exit 1
 fi
 
-CMD+=" -f $FIXED -m $MOVING -p /Data/ParameterMap.txt -out /Out/ -threads 12"
+CMD+=(-f "$FIXED" -m "$MOVING" -p /Data/ParameterMap.txt -out /Out/ -threads 12)
 
 if [ -f "/Data/Fixed_mask.mha" ]; then
-    CMD+=" -fMask /Data/Fixed_mask.mha"
+    CMD+=(-fMask /Data/Fixed_mask.mha)
 elif [ -f "/Data/Fixed_mask.nii.gz" ]; then
-    CMD+=" -fMask /Data/Fixed_mask.nii.gz"
+    CMD+=(-fMask /Data/Fixed_mask.nii.gz)
 fi
 
 if [ -f "/Data/Moving_mask.mha" ]; then
-    CMD+=" -mMask /Data/Moving_mask.mha"
+    CMD+=(-mMask /Data/Moving_mask.mha)
 elif [ -f "/Data/Moving_mask.nii.gz" ]; then
-    CMD+=" -mMask /Data/Moving_mask.nii.gz"
+    CMD+=(-mMask /Data/Moving_mask.nii.gz)
 fi
 
 if [ -f "/Data/Fixed_landmarks.txt" ] && [ -f "/Data/Moving_landmarks.txt" ]; then
-    CMD+=" -fp /Data/Fixed_landmarks.txt -mp /Data/Moving_landmarks.txt"
+    CMD+=(-fp /Data/Fixed_landmarks.txt -mp /Data/Moving_landmarks.txt)
 fi
 
-$CMD
+echo "Running: ${CMD[*]}"
+exec env "${CMD[@]}"
