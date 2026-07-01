@@ -43,7 +43,7 @@ class Standardize(torch.nn.Module):
         super().__init__()
     
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        if stats.shape[0] == 4:
+        if stats.numel() == 4:
             return (x-stats[2])/stats[3]
         else:
             return (x-x.mean())/x.std()

@@ -12,7 +12,7 @@ class StandardizeImageNet(torch.nn.Module):
         self.register_buffer("std",  torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
             
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        if stats.shape[0] == 4:
+        if stats.numel() == 4:
             minv = stats[0]
             maxv = stats[1]
         else:
