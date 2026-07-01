@@ -10,7 +10,7 @@ class Normalize(torch.nn.Module):
         super().__init__()
         
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        if stats.shape[0] == 4:
+        if stats.numel() == 4:
             return (x - stats[0]) / (stats[1] - stats[0] + 1e-6)
         else:
             vmin = x.min()
@@ -47,8 +47,8 @@ class Mind3D(torch.nn.Module):
         mshift2 = torch.zeros(12, 1, 3, 3, 3)
         mshift2.view(-1)[torch.arange(12) * 27 + idx_shift2[:,0] * 9 + idx_shift2[:, 1] * 3 + idx_shift2[:, 2]] = 1
 
-        self.conv1 = nn.Conv3d(1, 12, kernel_size=3, stride=1, padding=1, bias=False, dilation=dilation, groups=1)
-        self.conv2 = nn.Conv3d(1, 12, kernel_size=3, stride=1, padding=1, bias=False, dilation=dilation, groups=1)
+        self.conv1 = nn.Conv3d(1, 12, kernel_size=3, stride=1, padding=0, bias=False, dilation=dilation, groups=1)
+        self.conv2 = nn.Conv3d(1, 12, kernel_size=3, stride=1, padding=0, bias=False, dilation=dilation, groups=1)
 
         self.conv1.weight = nn.Parameter(mshift1, requires_grad=False)
         self.conv2.weight = nn.Parameter(mshift2, requires_grad=False)
@@ -108,9 +108,9 @@ class Mind2D(nn.Module):
         mshift1.view(-1)[torch.arange(num_pairs) * 9 + idx_shift1[:, 0] * 3 + idx_shift1[:, 1]] = 1
         mshift2.view(-1)[torch.arange(num_pairs) * 9 + idx_shift2[:, 0] * 3 + idx_shift2[:, 1]] = 1
 
-        self.conv1 = nn.Conv2d(1, num_pairs, kernel_size=3, stride=1, padding=1,
+        self.conv1 = nn.Conv2d(1, num_pairs, kernel_size=3, stride=1, padding=0,
                                bias=False, dilation=dilation, groups=1)
-        self.conv2 = nn.Conv2d(1, num_pairs, kernel_size=3, stride=1, padding=1,
+        self.conv2 = nn.Conv2d(1, num_pairs, kernel_size=3, stride=1, padding=0,
                                bias=False, dilation=dilation, groups=1)
 
         self.conv1.weight = nn.Parameter(mshift1, requires_grad=False)

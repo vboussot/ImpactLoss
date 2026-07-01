@@ -8,7 +8,7 @@ class Normalize(torch.nn.Module):
         super().__init__()
         
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        if stats.shape[0] == 4:
+        if stats.numel() == 4:
             return (x - stats[0]) / (stats[1] - stats[0] + 1e-6)
         else:
             vmin = x.min()

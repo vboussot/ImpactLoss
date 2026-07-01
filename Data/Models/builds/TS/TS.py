@@ -63,7 +63,7 @@ class Standardize(torch.nn.Module):
         super().__init__()
     
     def forward(self, x: torch.Tensor, stats: torch.Tensor) -> torch.Tensor:
-        if stats.shape[0] == 4:
+        if stats.numel() == 4:
             return (x-stats[2])/stats[3]
         else:
             return (x-x.mean())/x.std()
@@ -80,7 +80,7 @@ class Canonical(torch.nn.Module):
         super().__init__()
 
     def get_permute_and_flip(self, direction: torch.Tensor) -> tuple[bool, bool, bool, int, int, int] | None:
-        if direction.dim() != 2 or direction.shape[0] != 3 or direction.shape[1] != 3: 
+        if direction.dim() != 2 or direction.size(0) != 3 or direction.size(1) != 3: 
             return None
         
         A = torch.diag(torch.tensor([-1., -1., 1.], dtype=torch.double)) @ direction.to(torch.double).T
