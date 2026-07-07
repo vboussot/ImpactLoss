@@ -80,10 +80,10 @@ class Canonical(torch.nn.Module):
         super().__init__()
 
     def get_permute_and_flip(self, direction: torch.Tensor) -> tuple[bool, bool, bool, int, int, int] | None:
-        if direction.dim() != 2 or direction.size(0) != 3 or direction.size(1) != 3: 
+        if len(direction.shape) != 2 or direction.size(0) != 3 or direction.size(1) != 3:
             return None
-        
-        A = torch.diag(torch.tensor([-1., -1., 1.], dtype=torch.double)) @ direction.to(torch.double).T
+
+        A = torch.diag(torch.tensor([-1., -1., 1.], dtype=torch.double, device=direction.device)) @ direction.to(torch.double).T
         
         perm_xyz: list[int] = []
         flip_xyz: list[bool] = []
