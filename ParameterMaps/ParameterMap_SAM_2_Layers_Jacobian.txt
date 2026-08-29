@@ -1,7 +1,7 @@
 // IMPACT metric
 (Metric "Impact")
 
-(ImpactModelsPath0 "/Data/Models/SAM2.1/Tiny_2_Layers.pt")
+(ImpactModelsPath0 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt")
 (ImpactDimension0 2)
 (ImpactNumberOfChannels0 3)
 (ImpactPatchSize0 29 29)
@@ -12,7 +12,7 @@
 (ImpactDistance0 "L2")
 (ImpactLayersWeight0 1)
 
-(ImpactModelsPath1 "/Data/Models/SAM2.1/Tiny_2_Layers.pt")
+(ImpactModelsPath1 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt")
 (ImpactDimension1 2)
 (ImpactNumberOfChannels1 3)
 (ImpactPatchSize1 29 29)
@@ -23,7 +23,7 @@
 (ImpactDistance1 "L2")
 (ImpactLayersWeight1 1)
 
-(ImpactModelsPath2 "/Data/Models/SAM2.1/Tiny_2_Layers.pt")
+(ImpactModelsPath2 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt")
 (ImpactDimension2 2)
 (ImpactNumberOfChannels2 3)
 (ImpactPatchSize2 29 29)
@@ -34,7 +34,7 @@
 (ImpactDistance2 "L2")
 (ImpactLayersWeight2 1)
 
-(ImpactModelsPath3 "/Data/Models/SAM2.1/Tiny_2_Layers.pt")
+(ImpactModelsPath3 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt")
 (ImpactDimension3 2)
 (ImpactNumberOfChannels3 3)
 (ImpactPatchSize3 29 29)

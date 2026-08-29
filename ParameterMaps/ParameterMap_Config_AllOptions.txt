@@ -1,7 +1,7 @@
 // IMPACT metric
 (Metric "Impact")
 
-(ImpactModelsPath0 "/Data/Models/TS/M730_8_Layers.pt")
+(ImpactModelsPath0 "/Data/Models/TS/M730.pt")
 (ImpactDimension0 3)
 (ImpactNumberOfChannels0 1)
 (ImpactPatchSize0 11 11 11)
@@ -12,7 +12,7 @@
 (ImpactDistance0 "Dice")
 (ImpactLayersWeight0 1)
 
-(ImpactModelsPath1 "/Data/Models/SAM2.1/Tiny_2_Layers.pt" "/Data/Models/TS/M730_2_Layers.pt")
+(ImpactModelsPath1 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt" "/Data/Models/TS/M730.pt")
 (ImpactDimension1 2 3)
 (ImpactNumberOfChannels1 3 1)
 (ImpactPatchSize1 29 29 11 11 11)

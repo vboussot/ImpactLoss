@@ -1,7 +1,7 @@
 // IMPACT metric
 (Metric "Impact")
 
-(ImpactModelsPath0 "/Data/Models/MIND/R1D2.pt")
+(ImpactModelsPath0 "/Data/Models/MIND/R1D2_3D.pt")
 (ImpactDimension0 3)
 (ImpactNumberOfChannels0 1)
 (ImpactPatchSize0 7 7 7)
@@ -12,7 +12,7 @@
 (ImpactDistance0 "L2")
 (ImpactLayersWeight0 1)
 
-(ImpactModelsPath1 "/Data/Models/MIND/R1D2.pt")
+(ImpactModelsPath1 "/Data/Models/MIND/R1D2_3D.pt")
 (ImpactDimension1 3)
 (ImpactNumberOfChannels1 1)
 (ImpactPatchSize1 7 7 7)
@@ -23,7 +23,7 @@
 (ImpactDistance1 "L2")
 (ImpactLayersWeight1 1)
 
-(ImpactModelsPath2 "/Data/Models/MIND/R1D2.pt")
+(ImpactModelsPath2 "/Data/Models/MIND/R1D2_3D.pt")
 (ImpactDimension2 3)
 (ImpactNumberOfChannels2 1)
 (ImpactPatchSize2 7 7 7)
@@ -34,7 +34,7 @@
 (ImpactDistance2 "L2")
 (ImpactLayersWeight2 1)
 
-(ImpactModelsPath3 "/Data/Models/MIND/R1D2.pt")
+(ImpactModelsPath3 "/Data/Models/MIND/R1D2_3D.pt")
 (ImpactDimension3 3)
 (ImpactNumberOfChannels3 1)
 (ImpactPatchSize3 7 7 7)

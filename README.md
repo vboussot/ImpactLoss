@@ -19,6 +19,15 @@
 
 ---
 
+## 🌐 The IMPACT ecosystem
+
+- **[ImpactLoss](https://github.com/vboussot/ImpactLoss)** (this repo) — the reference PyTorch loss and the ready-to-run Elastix integration (parameter maps, Docker, installer).
+- **[ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT)** — the IMPACT core as an official ITK remote module (model loading, feature extraction, semantic losses); the shared, framework-neutral backend the Elastix metric builds on.
+- **[ImpactElastix](https://github.com/vboussot/ImpactElastix)** — the Elastix distribution shipping the IMPACT metric.
+- **[Pretrained models](https://huggingface.co/VBoussot/impact-torchscript-models)** — TorchScript feature extractors on Hugging Face.
+
+---
+
 ## ✨ Key Features
 
 - **Generic, Training-free**  
@@ -94,7 +103,7 @@ The following configurations were found to be optimal in the IMPACT study:
 
 > • **CT/CBCT → Early layers + Jacobian** — enhance structure visibility while reducing noise and artifacts.
 > • **MR/CT → High-level layers + Static + MIND** — emphasize anatomical contours and intra-organ consistency.  
-> • Use **`TS/M730_2_Layers`** as the **default model**, and **organ-specific models** (e.g., `M258`) for targeted anatomical regions.
+> • Use **`TS/M730`** as the **default model**, and **organ-specific models** (e.g., `M258`) for targeted anatomical regions.
 
 ---
 
@@ -190,10 +199,14 @@ cd ..
 
 ### 🧱 Build Instructions
 
-1. Clone the [ImpactElastix](https://github.com/vboussot/ImpactElastix) repository:
+1. Clone the [ImpactElastix](https://github.com/vboussot/ImpactElastix) repository together
+   with the [ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT) backend — the
+   shared IMPACT core (losses, model loading, and online inference) that the Elastix metric
+   now consumes:
 
 ```bash
 git clone https://github.com/vboussot/ImpactElastix.git
+git clone https://github.com/InsightSoftwareConsortium/ITKIMPACT.git
 ```
 
 2. Create build and install directories:
@@ -210,11 +223,13 @@ cmake -DTorch_DIR=../libtorch/share/cmake/Torch/ \
       -DITK_DIR=../ITK-install/lib/cmake/ITK-6.0/ \
       -DCMAKE_INSTALL_PREFIX=../ImpactElastix-install \
       -DUSE_ImpactMetric=ON \
+      -DITKIMPACT_INCLUDE_DIR=../ITKIMPACT/include \
       ../ImpactElastix
 ```
 
 - `Torch_DIR`: path to the **CMake config directory of LibTorch** (usually inside `libtorch/share/cmake/Torch/`)
 - `ITK_DIR`: path to the **CMake config directory of ITK**, typically inside your ITK install folder (e.g., `ITK-install/lib/cmake/ITK-*`)
+- `ITKIMPACT_INCLUDE_DIR`: path to the **`include/` directory of [ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT)**, the shared IMPACT backend (`ImpactLoss.h`, `itkImpactModelConfiguration.h`, `itkImpactOnlineInference.h`, …) the Elastix metric builds against.
 
 4. Build and install Elastix with IMPACT:
 
@@ -264,12 +279,12 @@ You can also use **IMPACT** directly as a PyTorch loss module.
 The implementation is available in [`IMPACT.py`](IMPACT.py).
 
 ```python
-from IMPACT import IMPACT
+from IMPACT import IMPACTReg
 import torch
 
 # Instantiate the IMPACT loss
-loss_fn = IMPACT(
-    model_name="TS/M730_2_Layers",  # TorchScript model on Hugging Face
+loss_fn = IMPACTReg(
+    model_name="TS/M730.pt",  # TorchScript model on Hugging Face
     shape=[0, 0, 0],                # [H, W, D] for explicit size, or [0, 0, 0] to disable resampling
     in_channels=1,                  # Number of input channels
     weights=[1, 1]                  # One weight per output layer

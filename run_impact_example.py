@@ -31,7 +31,7 @@ if __name__ == "__main__":
     sitk.WriteImage(moving_image, "{}/Moving_image.mha".format(data_path))  # Standardize moving image
 
     # Copy the example parameter map configuration to the data directory
-    os.system("cp ../ParameterMaps/ParameterMap_TS_2_Layers_Jacobian.txt {}/ParameterMap.txt".format(data_path))
+    os.system("cp ../ParameterMaps/ParameterMap_Recommended.txt {}/ParameterMap.txt".format(data_path))
 
     start_time = time.time()
 

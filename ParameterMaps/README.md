@@ -9,7 +9,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
 ### 🔗 Minimal Example
 
 ```txt
-(ImpactModelsPath0 "/Data/Models/TS/M291_1_Layers.pt")
+(ImpactModelsPath0 "/Data/Models/TS/M291.pt")
 (ImpactDimension0 3)
 (ImpactNumberOfChannels0 1)
 (ImpactPatchSize0 5 5 5)
@@ -202,8 +202,8 @@ IMPACT supports parallel use of multiple models and per-resolution customization
 You can specify different parameter values for each resolution level by using indexed parameter names, such as ImpactModelsPath0, ImpactModelsPath1, etc.
 
 ```txt
-(ImpactModelsPath0 "/Data/Models/TS/M291_1_Layers.pt")
-(ImpactModelsPath1 "/Data/Models/SAM/Tiny_2_Layers.pt")
+(ImpactModelsPath0 "/Data/Models/TS/M291.pt")
+(ImpactModelsPath1 "/Data/Models/SAM2.1/SAM2.1_Tiny.pt")
 (ImpactDimension0 3)
 (ImpactDimension1 2)
 (ImpactNumberOfChannels0 1)
@@ -248,7 +248,7 @@ This indexed syntax is supported by all parameters except the following, which u
 To assign multiple feature extractors, use space-separated lists for each parameter:
 
 ```txt
-(ImpactModelsPath0 "/Models/M850_8_Layers.pt" "/Models/MIND/R1D2.pt")
+(ImpactModelsPath0 "/Models/TS/M850.pt" "/Models/MIND/R1D2_3D.pt")
 (ImpactDimension0 3 3)
 (ImpactNumberOfChannels0 1 1)
 (ImpactPatchSize0 5 5 5 7 7 7)
@@ -275,8 +275,8 @@ To assign multiple feature extractors, use space-separated lists for each parame
 You can assign **different models** to the fixed and moving images using:
 
 ```txt
-(FixedModelsPath0 "/Models/TS/M850_8_Layers.pt")
-(MovingModelsPath0 "/Models/MIND/R1D2.pt")
+(ImpactFixedModelsPath0 "/Models/TS/M850.pt")
+(ImpactMovingModelsPath0 "/Models/MIND/R1D2_3D.pt")
 ```
 
 In this case, all model-specific parameters must be defined **independently** for each image using the `ImpactFixed*` and `ImpactMoving*` prefixes:
