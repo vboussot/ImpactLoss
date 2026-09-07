@@ -69,6 +69,10 @@ class Mind3D(torch.nn.Module):
         mind_var = torch.mean(mind, dim=1, keepdim=True)
         mind_var_mean = mind_var.mean()
         mind_var = torch.clamp(mind_var, mind_var_mean * 0.001, mind_var_mean * 1000)
+        # A batch of constant patches has mind_var_mean = 0, so both bounds are 0 and 0/0 = NaN.
+        # The floor is the lower bound a whole image of mean variance 1e-3 already imposes on
+        # its flat patches; such a patch yields the flat descriptor exp(0) = 1 instead.
+        mind_var = torch.clamp(mind_var, min=1e-6)
         mind /= mind_var
         mind = torch.exp(-mind)
         return [mind]
@@ -131,6 +135,10 @@ class Mind2D(nn.Module):
         mind_var = torch.mean(mind, dim=1, keepdim=True)
         mind_var_mean = mind_var.mean()
         mind_var = torch.clamp(mind_var, mind_var_mean * 0.001, mind_var_mean * 1000)
+        # A batch of constant patches has mind_var_mean = 0, so both bounds are 0 and 0/0 = NaN.
+        # The floor is the lower bound a whole image of mean variance 1e-3 already imposes on
+        # its flat patches; such a patch yields the flat descriptor exp(0) = 1 instead.
+        mind_var = torch.clamp(mind_var, min=1e-6)
         mind /= mind_var
         mind = torch.exp(-mind)
         return [mind]
