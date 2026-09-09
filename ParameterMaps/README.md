@@ -115,7 +115,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
     ```txt
     (PatchSize 0 0 0)
     ```
-    This avoids edge artifacts, especially with fully convolutional networks.
+    This avoids edge artifacts, especially with fully convolutional networks. An image too large for the GPU is split along its largest axis until it fits, so `0 0 0` is safe on any volume.
 
     ✅ Fast and memory-efficient  
     ❌ Not differentiable, no gradient propagation through the feature extractor  
@@ -134,7 +134,7 @@ Several example parameter maps are provided in the [`ParameterMaps/`](../Paramet
       and **suboptimal convergence** during optimization.<br><br>
 
   - `"Jacobian"`: features are computed from randomly extracted patches at each iteration.
-    Gradients are backpropagated through the TorchScript model.
+    Gradients are backpropagated through the TorchScript model. The patches go through the model in batches sized from the GPU memory, measured at the start of each resolution, so `NumberOfSpatialSamples` can stay large. A heavy model on a large patch is slow rather than out of memory.
 
     ✅ Precise, fully differentiable  
     ❌ Slower
