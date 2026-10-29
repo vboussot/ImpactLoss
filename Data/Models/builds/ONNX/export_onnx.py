@@ -37,14 +37,16 @@ Metadata, <model>_depth<n>.json beside the graph:
                       the head's one-hot
 
 Checks, on an input of another size than the export's: the rebuilt network against the .pt in torch (1e-5 relative L2
-per layer, the input's gradient through the differentiable layers to 1e-5, the head's labels to the bit), then the
-ONNX graph against the .pt with ONNX Runtime (1e-5 relative L2 per layer, labels to the bit).
+per layer and the head's labels to the bit in float32, the input's gradient through the differentiable layers to
+1e-10 in float64), then the ONNX graph against the .pt with ONNX Runtime (1e-5 relative L2 per layer, labels to the
+bit).
 
 Supported: the U-Nets of the builds (TS/*, MRSeg) and the models that wrap one network after their normalisation
 (Anatomix). Requires torch, onnx, onnxruntime, huggingface_hub.
 """
 
 import argparse
+import copy
 import json
 import tempfile
 from pathlib import Path
@@ -280,18 +282,26 @@ def export(path, depth, out, size, check):
     def reference(x, stats):  # no direction: Canonical leaves the image as it is
         return [layer.float() for layer in ts(x, torch.tensor([depth]), stats, torch.tensor([]))]
 
-    # torch: values and the input's gradient.
+    # torch: values in float32, then the input's gradient in float64. In float32 the two networks round differently
+    # wherever the CPU's convolution routine does, and an activation at its kink then sends the gradient one way or
+    # the other: the gradients drift by 2e-4 on one machine and 2e-6 on another. In float64 that rounding is gone and
+    # what is left is the networks themselves.
     x, stats = _inputs(check, 1)
-    x_ref, x_new = x.clone().requires_grad_(), x.clone().requires_grad_()
-    expected, got = reference(x_ref, stats), list(module(x_new, stats))
-    _compare("torch", [g.detach() for g in got], [e.detach() for e in expected], head)
-    weights = [torch.randn(g.shape, generator=torch.Generator().manual_seed(i)) for i, g in enumerate(got)]
+    with torch.no_grad():
+        _compare("torch", list(module(x, stats)), reference(x, stats), head)
+    ts64 = torch.jit.load(hf_hub_download(REPO, path, revision=REVISION), map_location="cpu").eval().double()
+    module64 = copy.deepcopy(module).double()
+    x_ref, x_new = x.double().requires_grad_(), x.double().requires_grad_()
+    expected = list(ts64(x_ref, torch.tensor([depth]), stats.double(), torch.tensor([])))
+    got = list(module64(x_new, stats.double()))
+    generators = (torch.Generator().manual_seed(i) for i in range(len(got)))
+    weights = [torch.randn(g.shape, generator=r, dtype=torch.float64) for g, r in zip(got, generators)]
     differentiable = [i for i in range(len(got)) if i != head]
     sum((expected[i] * weights[i]).sum() for i in differentiable).backward()
     sum((got[i] * weights[i]).sum() for i in differentiable).backward()
     error = _relative(x_new.grad, x_ref.grad)
-    print(f"  torch input gradient: relative L2 {error:.1e}")
-    assert error < 1e-5, f"the input's gradient is {error:.1e} off the .pt's"
+    print(f"  torch input gradient (float64): relative L2 {error:.1e}")
+    assert error < 1e-10, f"the input's gradient is {error:.1e} off the .pt's"
 
     target = out / Path(path).parent / f"{Path(path).stem}_depth{depth}.onnx"
     target.parent.mkdir(parents=True, exist_ok=True)
