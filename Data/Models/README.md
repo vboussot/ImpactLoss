@@ -28,6 +28,18 @@ This will download and organize all models into subfolders (`TS/`, `SAM2.1/`, `M
 
 ---
 
+### 📦 ONNX Exports
+
+Some models are also published as ONNX graphs, next to their `.pt` in the same repository, one per depth:
+`TS/M291_depth2.onnx`, `TS/M730_depth2.onnx`, `TS/M730_depth7.onnx`, `TS/M730_depth8.onnx`,
+`Anatomix/Anatomix_depth1.onnx`. A graph takes the image `x` `[1, 1, Z, Y, X]` and its `stats` `[min, max, mean, std]`
+and returns the layers the `.pt` returns when called with that `nb_layers` and no direction. Beside each graph,
+`<model>_depth<n>.json` gives its layers' channels and strides, whether it reads `stats`, the size its input must
+divide by, and whether the consumer must reorient the image as the `.pt`'s `Canonical` does.
+`builds/ONNX/export_onnx.py` makes them (see `builds/README.md`), and `sh download_models.sh --onnx` downloads them.
+
+---
+
 ### 🧾 Example Usage in Elastix
 
 Once the models are in place, you can reference them in your Elastix parameter map like this:
