@@ -24,6 +24,17 @@ MODELS["SAM2.1"]="SAM2.1_Tiny.pt SAM2.1_Small.pt"
 # TotalSegmentator (TS)
 MODELS["TS"]="M258.pt M291.pt M292.pt M293.pt M294.pt M295.pt M297.pt M298.pt M730.pt M731.pt M732.pt M733.pt M850.pt M851.pt M852.pt M853.pt"
 
+# ONNX exports (builds/ONNX/export_onnx.py), downloaded with --onnx
+declare -A ONNX
+ONNX["TS"]="M291_depth2.onnx M291_depth2.json M730_depth2.onnx M730_depth2.json M730_depth7.onnx M730_depth7.json M730_depth8.onnx M730_depth8.json"
+ONNX["Anatomix"]="Anatomix_depth1.onnx Anatomix_depth1.json"
+
+if [ "$1" = "--onnx" ]; then
+  for folder in "${!ONNX[@]}"; do
+    MODELS["$folder"]="${MODELS[$folder]} ${ONNX[$folder]}"
+  done
+fi
+
 # =============================================
 
 # Create folders
