@@ -1,0 +1,62 @@
+name: ONNX exports
+
+# Re-exports a small and a mid-size model with Data/Models/builds/ONNX/export_onnx.py and runs its checks: the rebuilt
+# network against the TorchScript model in torch (layers and input gradients), then the ONNX graph with ONNX Runtime on
+# an input of another size. A change that breaks an export, or the models' contract, fails here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Data/Models/builds/ONNX/**"
+      - "Data/Models/download_models.sh"
+      - ".github/workflows/onnx-exports.yml"
+  pull_request:
+    paths:
+      - "Data/Models/builds/ONNX/**"
+      - "Data/Models/download_models.sh"
+      - ".github/workflows/onnx-exports.yml"
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - { path: TS/M291.pt, layers: 2 }
+          - { path: Anatomix/Anatomix.pt, layers: 1 }
+    name: ${{ matrix.model.path }} at depth ${{ matrix.model.layers }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install onnx==1.22.0 onnxruntime==1.27.0 huggingface_hub==1.29.0
+
+      - name: Cache the TorchScript models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ matrix.model.path }}
+
+      - name: Export and check
+        working-directory: Data/Models/builds/ONNX
+        run: python export_onnx.py ${{ matrix.model.path }} --layers ${{ matrix.model.layers }} --out "$RUNNER_TEMP/onnx-out"
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell
+        run: bash -n Data/Models/download_models.sh && shellcheck --severity=error Data/Models/download_models.sh
+      - name: Python syntax
+        run: python3 -m py_compile Data/Models/builds/ONNX/export_onnx.py
