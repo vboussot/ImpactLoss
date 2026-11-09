@@ -37,19 +37,6 @@ One loss, available wherever a registration is optimized or trained.
 - **Models**: [TorchScript feature extractors](https://huggingface.co/VBoussot/impact-torchscript-models) on Hugging Face.
 - **Tools**: [impact-reg-konfai](https://pypi.org/project/impact-reg-konfai/), one CLI for the elastix, ConvexAdam and FireANTs presets, and [SlicerImpactReg](https://github.com/vboussot/SlicerImpactReg) for 3D Slicer.
 
----|---|---|
-| **[elastix](https://elastix.dev/)** | A standard elastix metric (B-spline, masks, multi-resolution) | [ImpactElastix](https://github.com/vboussot/ImpactElastix), this repo |
-| **[ConvexAdam](https://github.com/multimodallearning/convexAdam)** | Coupled-convex initialisation, then Adam instance optimisation, on IMPACT features | [ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT) (`itk-impact`) |
-| **[FireANTs](https://github.com/rohitrango/FireANTs)** | Rigid, affine, then SyN diffeomorphic registration driven by IMPACT on the GPU | [IMPACT-Reg presets](https://huggingface.co/VBoussot/ImpactReg) |
-| **Learning-based networks** | A PyTorch `nn.Module` loss between the warped and the fixed image | [`IMPACT.py`](IMPACT.py), see [Using IMPACT in PyTorch](#-using-impact-in-pytorch) |
-
-**Ready-to-use tools**
-
-- **[impact-reg-konfai](https://pypi.org/project/impact-reg-konfai/)**: one CLI running the published elastix, ConvexAdam and FireANTs presets ([`VBoussot/ImpactReg`](https://huggingface.co/VBoussot/ImpactReg)), with ensembling and evaluation, built on [KonfAI](https://github.com/fideus-labs/KonfAI).
-- **[SlicerImpactReg](https://github.com/vboussot/SlicerImpactReg)**: the same presets in 3D Slicer, with quality assessment.
-
-The rest of this page covers the elastix integration, then the PyTorch loss.
-
 ---
 
 ## ✨ Key Features
