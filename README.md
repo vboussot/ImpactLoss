@@ -1,13 +1,17 @@
 # 🔬 IMPACT Reg: A Generic Semantic Loss for Multimodal Image Registration
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://github.com/SuperElastix/elastix/raw/main/LICENSE)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Models](https://img.shields.io/badge/models-huggingface-orange)](https://huggingface.co/VBoussot/impact-torchscript-models)
 [![Docker](https://img.shields.io/badge/docker-ready-blueviolet)](https://hub.docker.com/repository/docker/vboussot/elastix_impact)
  [![Paper](https://img.shields.io/badge/📌%20Paper-IMPACT-blue)](https://arxiv.org/abs/2503.24121)
 
 <img src="logo.png" alt="IMPACT Logo" width="250" align="right">
 
-**IMPACT Reg** is a novel, task-agnostic similarity metric designed for **multimodal medical image registration**. Instead of relying on intensity based metric, handcrafted descriptors or training task-specific models, IMPACT reuses powerful segmentation foundation models (e.g., TotalSegmentator, SAM) as generic feature extractors. These deep features are used to define a semantic similarity loss, optimized directly in registration frameworks like Elastix or VoxelMorph.
+**IMPACT Reg** compares two images by their anatomy, not by their intensities. It reads both through a pretrained segmentation model (TotalSegmentator, SAM) and measures the distance between their deep features. No training, no handcrafted descriptor, any modality.
+
+It was built for **multimodal image registration**, and runs wherever a registration is optimized or trained: **elastix**, **ConvexAdam**, **FireANTs**, or any network, as a plain **PyTorch loss**.
+
+It also goes beyond registration: in image synthesis, it tells whether the network kept the anatomy of its input or deformed it.
 
 <br>
 
@@ -21,10 +25,30 @@
 
 ## 🌐 The IMPACT ecosystem
 
-- **[ImpactLoss](https://github.com/vboussot/ImpactLoss)** (this repo) — the reference PyTorch loss and the ready-to-run Elastix integration (parameter maps, Docker, installer).
-- **[ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT)** — the IMPACT core as an official ITK remote module (model loading, feature extraction, semantic losses); the shared, framework-neutral backend the Elastix metric builds on.
-- **[ImpactElastix](https://github.com/vboussot/ImpactElastix)** — the Elastix distribution shipping the IMPACT metric.
-- **[Pretrained models](https://huggingface.co/VBoussot/impact-torchscript-models)** — TorchScript feature extractors on Hugging Face.
+One loss, available wherever a registration is optimized or trained.
+
+| Method | Where |
+|---|---|
+| **[elastix](https://elastix.dev/)** | [ImpactElastix](https://github.com/vboussot/ImpactElastix), with the parameter maps, Docker image and installer of this repo |
+| **[ConvexAdam](https://github.com/multimodallearning/convexAdam)** | [ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT), the IMPACT core as an ITK module, in C++ and Python (`pip install itk-impact`) |
+| **[FireANTs](https://github.com/rohitrango/FireANTs)** | [IMPACT-Reg presets](https://huggingface.co/VBoussot/ImpactReg) |
+| **Any PyTorch-trained network** | [`IMPACT.py`](IMPACT.py), see [Using IMPACT in PyTorch](#-using-impact-in-pytorch) |
+
+- **Models**: [TorchScript feature extractors](https://huggingface.co/VBoussot/impact-torchscript-models) on Hugging Face.
+- **Tools**: [impact-reg-konfai](https://pypi.org/project/impact-reg-konfai/), one CLI for the elastix, ConvexAdam and FireANTs presets, and [SlicerImpactReg](https://github.com/vboussot/SlicerImpactReg) for 3D Slicer.
+
+---|---|---|
+| **[elastix](https://elastix.dev/)** | A standard elastix metric (B-spline, masks, multi-resolution) | [ImpactElastix](https://github.com/vboussot/ImpactElastix), this repo |
+| **[ConvexAdam](https://github.com/multimodallearning/convexAdam)** | Coupled-convex initialisation, then Adam instance optimisation, on IMPACT features | [ITKIMPACT](https://github.com/InsightSoftwareConsortium/ITKIMPACT) (`itk-impact`) |
+| **[FireANTs](https://github.com/rohitrango/FireANTs)** | Rigid, affine, then SyN diffeomorphic registration driven by IMPACT on the GPU | [IMPACT-Reg presets](https://huggingface.co/VBoussot/ImpactReg) |
+| **Learning-based networks** | A PyTorch `nn.Module` loss between the warped and the fixed image | [`IMPACT.py`](IMPACT.py), see [Using IMPACT in PyTorch](#-using-impact-in-pytorch) |
+
+**Ready-to-use tools**
+
+- **[impact-reg-konfai](https://pypi.org/project/impact-reg-konfai/)**: one CLI running the published elastix, ConvexAdam and FireANTs presets ([`VBoussot/ImpactReg`](https://huggingface.co/VBoussot/ImpactReg)), with ensembling and evaluation, built on [KonfAI](https://github.com/fideus-labs/KonfAI).
+- **[SlicerImpactReg](https://github.com/vboussot/SlicerImpactReg)**: the same presets in 3D Slicer, with quality assessment.
+
+The rest of this page covers the elastix integration, then the PyTorch loss.
 
 ---
 
@@ -46,7 +70,7 @@
   Ranked in the top participants of multiple Learn2Reg challenges, showing state-of-the-art performance across diverse tasks (thorax, abdomen, pelvis, CT/CBCT/MRI).
 
 - **Seamless integration with Elastix**  
-  Natively implemented as a standard Elastix metric, IMPACT inherits all the strengths of classical registration: multi-resolution strategies, mask support, sparce deformation models, and full reproducibility. It also handles images of different sizes, resolutions, and fields of view, making it ideal for real-world clinical datasets with heterogeneous inputs.
+  Natively implemented as a standard Elastix metric, IMPACT inherits all the strengths of classical registration: multi-resolution strategies, mask support, sparse deformation models, and full reproducibility. It also handles images of different sizes, resolutions, and fields of view, making it ideal for real-world clinical datasets with heterogeneous inputs.
 
 - **Efficient runtime for standard registration tasks**  
   - ~150 seconds (Static mode)  
@@ -275,8 +299,7 @@ Complete example of how to run registration with IMPACT is provided in:
 
 ## 🧠 Using IMPACT in PyTorch
 
-You can also use **IMPACT** directly as a PyTorch loss module.  
-The implementation is available in [`IMPACT.py`](IMPACT.py).
+**IMPACT** is also a plain PyTorch loss (`torch.nn.Module`), implemented in [`IMPACT.py`](IMPACT.py). It is differentiable, so any method optimized or trained in PyTorch can use it, in registration or elsewhere: in synthesis, `loss_fn(synthesized, source)` tells whether the network kept the anatomy of its input.
 
 ```python
 from IMPACT import IMPACTReg
