@@ -7,9 +7,16 @@ rather than each batch's own, and the wrapper around it is SCRIPTED rather than 
 the default values declared below, and a model whose four arguments are all required cannot be called
 by a caller that passes only the image and its statistics.
 
+The network takes any input size of at least 32 voxels a side. anatomix pools by MaxPool3d(2), which floors, and comes
+back up by Upsample(scale_factor=2): an odd size at any of its four levels comes back one voxel short, at its end, and
+the concatenation with the skip fails. TS.py's convolutions round up, so it crops each upsampled map to its skip
+(crop_to_match); here the upsampled map takes its last voxel again where it is short (pad_to_match), just before the
+concatenation. Every other voxel keeps the Upsample's own value, and an even level is left as it was.
+
     python Anatomix.py
 """
 import torch
+import torch.nn.functional as F
 from anatomix.model.network import Unet
 from huggingface_hub import hf_hub_download
 
@@ -21,6 +28,35 @@ class Normalize(torch.nn.Module):
             return (x - stats[0]) / (stats[1] - stats[0] + 1e-6)
         vmin = x.min()
         return (x - vmin) / (x.max() - vmin + 1e-6)
+
+
+def pad_to_match(tensor: torch.Tensor, target_tensor: torch.Tensor) -> torch.Tensor:
+    """The upsampled map, its last voxel taken again along each axis where the skip is one longer (MaxPool3d floors)."""
+    return F.pad(tensor, [0, target_tensor.size(4) - tensor.size(4), 0, target_tensor.size(3) - tensor.size(3),
+                          0, target_tensor.size(2) - tensor.size(2)], mode="replicate")
+
+
+class AnySize(torch.nn.Module):
+    """anatomix's Unet.forward (skip connections, no residual), each upsampled map matched to its skip before the
+    concatenation."""
+
+    def __init__(self, unet: Unet):
+        super().__init__()
+        assert unet.use_skip_connection and not unet.residual_connection
+        self.layers = torch.nn.ModuleList(unet.model)
+        self.encoder: list[int] = list(unet.encoder_idx)
+        self.decoder: list[int] = list(unet.decoder_idx)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        skips: list[torch.Tensor] = []
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i in self.decoder:  # after the Upsample, as anatomix concatenates
+                skip = skips.pop()
+                x = torch.cat((skip, pad_to_match(x, skip)), dim=1)
+            if i in self.encoder:
+                skips.append(x)
+        return x
 
 
 class Anatomix(torch.nn.Module):
@@ -36,7 +72,6 @@ class Anatomix(torch.nn.Module):
 
 
 if __name__ == "__main__":
-    example = torch.ones((1, 1, 128, 128, 128))
     model = Unet(
         dimension=3,  # Only 3D supported for now
         input_nc=1,  # number of input channels
@@ -50,5 +85,5 @@ if __name__ == "__main__":
         strict=True,
     )
     model.eval()
-    scripted_module = torch.jit.script(Anatomix(torch.jit.trace(model, example)))
+    scripted_module = torch.jit.script(Anatomix(AnySize(model)))
     scripted_module.save("./Anatomix.pt")
