@@ -30,7 +30,8 @@ Metadata, <model>_depth<n>.json beside the graph:
     depth             n, the nb_layers the .pt is called with
     stats             whether the normalisation reads the stats input (false: fixed statistics)
     orientation       "canonical" (the consumer applies the .pt's Canonical, see above) or "none"
-    multiple          the size every spatial axis of x must divide by
+    multiple          the size every spatial axis of x must divide by (1: any size)
+    minimum           the smallest size a spatial axis of x may have, a multiple of multiple
     widest            (U-Nets) the channels of the widest tensor the graph computes at x's resolution, its working
                       memory's bound per pixel, a decoder's concatenation included
     layers            per output: its name, channels, stride ([Z, Y, X], x's size over the layer's), and nb_class for
@@ -58,8 +59,8 @@ from huggingface_hub import hf_hub_download
 from torch import nn
 
 REPO = "VBoussot/impact-torchscript-models"
-# The revision KonfAI reads the models at.
-REVISION = "47ffad660e67cebbac8d74aecf0fa181c5dac042"
+# The revision the graphs are exported from (KonfAI reads its models at its own MODELS_REVISION).
+REVISION = "db335fbb2737c40f5f17cacffa7c53dfcbdf70ef"
 
 
 def _copied(scripted, module):
@@ -223,21 +224,29 @@ def _compare(name, got, expected, labels):
             assert error < 1e-5, f"{name} layer {i}: {error:.1e} off the .pt"
 
 
-def _multiple(module):
-    """The smallest power of two p such that the module runs on a side of 3 p: the size each axis must divide by."""
-    for p in (1, 2, 4, 8, 16, 32, 64):
-        try:
-            with torch.no_grad():
-                module(*_inputs((3 * p,) * 3, 0))
-            return p
-        except RuntimeError:
-            continue
-    raise SystemExit("the model runs on no side up to 192")
+def _runs(module, side):
+    try:
+        with torch.no_grad():
+            module(*_inputs((side,) * 3, 0))
+        return True
+    except RuntimeError:
+        return False
+
+
+def _sizes(module):
+    """(multiple, minimum). The smallest power of two p whose side 3 p runs; the multiple, the smallest power of two q
+    whose side 3 p + q runs too (p for a network whose axes must divide by p, 1 for one that takes any size); the
+    minimum, the smallest multiple of q that runs (anatomix's reflect padding needs 32 voxels a side)."""
+    p = next((p for p in (1, 2, 4, 8, 16, 32, 64) if _runs(module, 3 * p)), None)
+    if p is None:
+        raise SystemExit("the model runs on no side up to 192")
+    q = next(q for q in (1, 2, 4, 8, 16, 32, 64) if q >= p or _runs(module, 3 * p + q))
+    return q, next(side for side in range(q, 3 * p + 1, q) if _runs(module, side))
 
 
 def write_metadata(ts, module, path, depth, target, head):
-    multiple = _multiple(module)
-    side = 64 if 64 % multiple == 0 else 4 * multiple
+    multiple, minimum = _sizes(module)
+    side = max(64, minimum)
     widest = []
 
     def record(tensor):
@@ -265,6 +274,7 @@ def write_metadata(ts, module, path, depth, target, head):
         "stats": normalization != "ClipAndNormalize",
         "orientation": "canonical" if hasattr(ts, "canonical") else "none",
         "multiple": multiple,
+        "minimum": minimum,
         **({"widest": max(widest)} if widest else {}),
         "layers": [
             {"name": f"layer_{i}", "channels": layer.shape[1], "stride": [side // n for n in layer.shape[2:]]}
