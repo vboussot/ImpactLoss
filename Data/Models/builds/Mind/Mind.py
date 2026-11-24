@@ -16,6 +16,13 @@ class Normalize(torch.nn.Module):
             vmin = x.min()
             return (x - vmin) / (x.max() - vmin + 1e-6)
         
+def _given(norms: list[torch.Tensor] | None) -> list[torch.Tensor]:
+    given: list[torch.Tensor] = []
+    if norms is not None:
+        given = norms
+    return given
+
+
 def pdist_squared3D(x):
     xx = (x**2).sum(dim=1).unsqueeze(2)
     yy = xx.permute(0, 2, 1)
@@ -57,7 +64,7 @@ class Mind3D(torch.nn.Module):
         self.rpad2 = nn.ReplicationPad3d(self.radius)
         self.normalize = Normalize()
     
-    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+    def _variance(self, x: torch.Tensor, stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.normalize(x, stats)
         ssd = F.avg_pool3d(
             self.rpad2(
@@ -66,8 +73,23 @@ class Mind3D(torch.nn.Module):
             self.radius * 2 + 1, stride=1
         )  
         mind = ssd - torch.min(ssd, dim=1, keepdim=True)[0]
-        mind_var = torch.mean(mind, dim=1, keepdim=True)
-        mind_var_mean = mind_var.mean()
+        return mind, torch.mean(mind, dim=1, keepdim=True)
+
+    @torch.jit.export
+    def norm_input(self, x: torch.Tensor, stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> torch.Tensor:
+        """The local variance whose mean over the image bounds it: what a pass over an image's regions averages
+        for ``norms`` ([2, 1]: that mean, then its variance, unused)."""
+        return self._variance(x, stats)[1]
+
+    @torch.jit.export
+    def norm_count(self, nb_layers: int) -> int:
+        return 1
+
+    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> list[torch.Tensor]:
+        mind, mind_var = self._variance(x, stats)
+        # MIND-SSC bounds the local variance by its mean over the image: given in ``norms`` for a region of one.
+        given = _given(norms)
+        mind_var_mean = mind_var.mean() if len(given) == 0 else given[0][0, 0].to(mind_var.dtype)
         mind_var = torch.clamp(mind_var, mind_var_mean * 0.001, mind_var_mean * 1000)
         # A batch of constant patches has mind_var_mean = 0, so both bounds are 0 and 0/0 = NaN.
         # The floor is the lower bound a whole image of mean variance 1e-3 already imposes on
@@ -124,7 +146,7 @@ class Mind2D(nn.Module):
         self.rpad2 = nn.ReplicationPad2d(radius)
         self.normalize = Normalize()
         
-    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+    def _variance(self, x: torch.Tensor, stats: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = self.normalize(x, stats)
         ssd = F.avg_pool2d(
             self.rpad2((self.conv1(self.rpad1(x)) - self.conv2(self.rpad1(x))) ** 2),
@@ -132,8 +154,23 @@ class Mind2D(nn.Module):
             stride=1
         )
         mind = ssd - torch.min(ssd, dim=1, keepdim=True)[0]
-        mind_var = torch.mean(mind, dim=1, keepdim=True)
-        mind_var_mean = mind_var.mean()
+        return mind, torch.mean(mind, dim=1, keepdim=True)
+
+    @torch.jit.export
+    def norm_input(self, x: torch.Tensor, stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> torch.Tensor:
+        """The local variance whose mean over the image bounds it: what a pass over an image's regions averages
+        for ``norms`` ([2, 1]: that mean, then its variance, unused)."""
+        return self._variance(x, stats)[1]
+
+    @torch.jit.export
+    def norm_count(self, nb_layers: int) -> int:
+        return 1
+
+    def forward(self, x: torch.Tensor, nb_layers: torch.Tensor = torch.tensor([1]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> list[torch.Tensor]:
+        mind, mind_var = self._variance(x, stats)
+        # MIND-SSC bounds the local variance by its mean over the image: given in ``norms`` for a region of one.
+        given = _given(norms)
+        mind_var_mean = mind_var.mean() if len(given) == 0 else given[0][0, 0].to(mind_var.dtype)
         mind_var = torch.clamp(mind_var, mind_var_mean * 0.001, mind_var_mean * 1000)
         # A batch of constant patches has mind_var_mean = 0, so both bounds are 0 and 0/0 = NaN.
         # The floor is the lower bound a whole image of mean variance 1e-3 already imposes on

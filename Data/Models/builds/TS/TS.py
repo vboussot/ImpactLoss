@@ -7,6 +7,37 @@ from pathlib import Path
 import json
 import os
 
+def _given(norms: list[torch.Tensor] | None) -> list[torch.Tensor]:
+    given: list[torch.Tensor] = []
+    if norms is not None:
+        given = norms
+    return given
+
+
+def _stat(norms: list[torch.Tensor], k: int) -> torch.Tensor | None:
+    if k < len(norms):
+        return norms[k]
+    return None
+
+
+class StatNorm(torch.nn.Module):
+    """InstanceNorm3d (affine) by the statistics it is handed, a [2, C] mean and variance, or else by its input's own:
+    a region of an image then reads as it does in the whole image."""
+
+    def __init__(self, num_features: int) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.ones(num_features))
+        self.bias = torch.nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x: torch.Tensor, stat: torch.Tensor | None) -> torch.Tensor:
+        if stat is None:
+            return torch.nn.functional.instance_norm(x, weight=self.weight, bias=self.bias, eps=1e-5)
+        stat = stat.to(x.dtype)
+        shape = [1, x.size(1)] + [1] * (x.dim() - 2)
+        scale = self.weight * torch.rsqrt(stat[1] + 1e-5)
+        return (x - stat[0].view(shape)) * scale.view(shape) + self.bias.view(shape)
+
+
 class ConvBlock(torch.nn.Module):
     
     def __init__(self, in_channels : int, out_channels : int, downsample: bool = False, mri: bool = False, lung: bool = False) -> None:
@@ -16,20 +47,24 @@ class ConvBlock(torch.nn.Module):
         else:
             self.Conv_0 = torch.nn.Conv3d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=(2,1,2), padding=1, bias=True)
          
-        self.Norm_0 = torch.nn.InstanceNorm3d(num_features=out_channels, affine=True)
+        self.Norm_0 = StatNorm(out_channels)
         self.Activation_0 = torch.nn.LeakyReLU(negative_slope=0.01)
         self.Conv_1 = torch.nn.Conv3d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, stride=1, padding=1, bias=True)
-        self.Norm_1 = torch.nn.InstanceNorm3d(num_features=out_channels, affine=True)
+        self.Norm_1 = StatNorm(out_channels)
         self.Activation_1 = torch.nn.LeakyReLU(negative_slope=0.01)
         
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, norms: list[torch.Tensor], k: int, stop: int) -> tuple[torch.Tensor, int, bool]:
+        """The block's output and the count of normalisations done, its two numbered k and k + 1; once ``stop`` is
+        reached, the input of that normalisation instead."""
         output = self.Conv_0(input)
-        output = self.Norm_0(output)
-        output = self.Activation_0(output)
+        if k == stop:
+            return output, k, True
+        output = self.Activation_0(self.Norm_0(output, _stat(norms, k)))
         output = self.Conv_1(output)
-        output = self.Norm_1(output)
-        output = self.Activation_1(output)
-        return output
+        if k + 1 == stop:
+            return output, k + 1, True
+        output = self.Activation_1(self.Norm_1(output, _stat(norms, k + 1)))
+        return output, k + 2, False
 
 class Head(torch.nn.Module):
 
@@ -130,220 +165,112 @@ class Canonical(torch.nn.Module):
             x = x.flip(4)
         return x
     
-class UnetCPP_1(torch.nn.Module):
+class UpStep(torch.nn.Module):
 
-    def __init__(self, nb_class: int, mri: bool = False, lung: bool = False) -> None:
+    def __init__(self, in_channels: int, out_channels: int, kernel: tuple[int, int, int]) -> None:
+        super().__init__()
+        self.Upsample = torch.nn.ConvTranspose3d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel, stride=kernel)
+        self.Block = ConvBlock(in_channels=out_channels * 2, out_channels=out_channels)
+
+
+class Unet(torch.nn.Module):
+    """TotalSegmentator's nnU-Net: ``depth`` encoder blocks, the decoder back to full resolution, the head. Its layers
+    are the encoder blocks' outputs, the decoder's last and the head's.
+
+    ``norms``, one [2, C] mean and variance per instance normalisation in the order they run, sets the statistics
+    those normalisations use, the later ones their input's own: a region normalised by the whole image's statistics
+    gives the whole image's layers there. ``norm_input`` returns the input of the next normalisation, which a pass over
+    the regions sums for its statistics."""
+
+    def __init__(self, nb_class: int, depth: int, mri: bool = False, lung: bool = False) -> None:
         super().__init__()
         if mri:
             self.normalize  = Standardize()
         else:
             self.normalize = ClipAndNormalize()
         self.canonical = Canonical()
+        channels = [32, 64, 128, 256, 320, 320][:depth]
+        self.down = torch.nn.ModuleList(
+            [ConvBlock(1 if i == 0 else channels[i - 1], channels[i], downsample=i > 0, mri=mri and i == 5, lung=lung and i == 5) for i in range(depth)]
+        )
+        # The decoder, deepest first; only the step after a sixth block takes its anisotropic stride.
+        kernels = [(2, 1, 2) if lung and i == 4 else (1, 2, 2) if mri and i == 4 else (2, 2, 2) for i in range(depth - 1)]
+        self.up = torch.nn.ModuleList([UpStep(channels[i + 1], channels[i], kernels[i]) for i in reversed(range(depth - 1))])
+        self.head = Head(32, nb_class)
+        self.depth = depth
 
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
-        self.DownConvBlock_5 = ConvBlock(in_channels=320, out_channels=320, downsample=True, mri=mri, lung = lung)
-
-        if lung:
-            self.Upsample_4 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=320, kernel_size=(2,1,2), stride=(2,1,2))
-        else:
-            self.Upsample_4 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=320, kernel_size=(1,2,2) if mri else 2, stride=(1,2,2) if mri else 2)        
-        
-        self.UpConvBlock_4 = ConvBlock(in_channels=320*2, out_channels=320)
-        
-        self.Upsample_3 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=256, kernel_size=2, stride=2)
-        self.UpConvBlock_3 = ConvBlock(in_channels=256*2, out_channels=256)
-        
-        self.Upsample_2 = torch.nn.ConvTranspose3d(in_channels=256, out_channels=128, kernel_size=2, stride=2)
-        self.UpConvBlock_2 = ConvBlock(in_channels=128*2, out_channels=128)
-        
-        self.Upsample_1 = torch.nn.ConvTranspose3d(in_channels=128, out_channels=64, kernel_size=2, stride=2)
-        self.UpConvBlock_1 = ConvBlock(in_channels=64*2, out_channels=64)
-        
-        self.Upsample_0 = torch.nn.ConvTranspose3d(in_channels=64, out_channels=32, kernel_size=2, stride=2)        
-        self.UpConvBlock_0 = ConvBlock(in_channels=32*2, out_channels=32)
-        self.Head_0 = Head(32, nb_class)
-
-    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([8]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
+    def _run(self, x: torch.Tensor, nb_layers: int, stats: torch.Tensor, direction: torch.Tensor, norms: list[torch.Tensor], stop: int) -> tuple[list[torch.Tensor], torch.Tensor | None]:
         x = self.normalize(x, stats)
-        nb_layers = nb_layers_tensor.item()
-
         permute_and_flip = self.canonical.get_permute_and_flip(direction)
-        inverse_permute_and_flip = self.canonical.get_inverse_permute_and_flip(permute_and_flip)
-
+        inverse = self.canonical.get_inverse_permute_and_flip(permute_and_flip)
         x = self.canonical(x, permute_and_flip)
+        outputs: list[torch.Tensor] = []
+        skips: list[torch.Tensor] = []
+        k = 0
+        for block in self.down:
+            x, k, hit = block(x, norms, k, stop)
+            if hit:
+                return outputs, self.canonical.inverse(x, inverse)
+            skips.append(x)
+            outputs.append(self.canonical.inverse(x, inverse))
+            if len(outputs) == nb_layers:
+                return outputs, None
+        level = len(skips) - 2
+        for step in self.up:
+            x = step.Upsample(x)
+            skip = skips[level]
+            x, k, hit = step.Block(torch.cat([crop_to_match(x, skip), skip], dim=1), norms, k, stop)
+            if hit:
+                return outputs, self.canonical.inverse(x, inverse)
+            level -= 1
+        outputs.append(self.canonical.inverse(x, inverse))
+        if len(outputs) == nb_layers:
+            return outputs, None
+        outputs.append(self.canonical.inverse(self.head(x), inverse))
+        return outputs, None
 
-        output_0 = self.DownConvBlock_0(x)
-        if nb_layers == 1:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip)]
-        output_1 = self.DownConvBlock_1(output_0)
-        if nb_layers == 2:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip)]
-        output_2 = self.DownConvBlock_2(output_1)
-        if nb_layers == 3:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip)]
-        output_3 = self.DownConvBlock_3(output_2)
-        if nb_layers == 4:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip)]
-        output_4 = self.DownConvBlock_4(output_3)
-        if nb_layers == 5:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip)]
-        output_5 = self.DownConvBlock_5(output_4)
-        if nb_layers == 6:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip), self.canonical.inverse(output_5, inverse_permute_and_flip)]
-        
-        output = self.Upsample_4(output_5)
-        output = self.UpConvBlock_4(torch.cat([crop_to_match(output, output_4), output_4], dim=1))
-        
-        output = self.Upsample_3(output)
-        output = self.UpConvBlock_3(torch.cat([crop_to_match(output, output_3), output_3], dim=1))
+    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([0]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> list[torch.Tensor]:
+        return self._run(x, int(nb_layers_tensor.item()), stats, direction, _given(norms), -1)[0]
 
-        output = self.Upsample_2(output)
-        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output_2), output_2], dim=1))
+    @torch.jit.export
+    def norm_input(self, x: torch.Tensor, stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([]), norms: list[torch.Tensor] | None = None) -> torch.Tensor:
+        """The input of the normalisation numbered ``len(norms)``, the earlier ones by ``norms``, on the image's axes."""
+        given = _given(norms)
+        captured = self._run(x, 0, stats, direction, given, len(given))[1]
+        assert captured is not None, "every normalisation has its statistics"
+        return captured
 
-        output = self.Upsample_1(output)
-        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output_1), output_1], dim=1))
-
-        output = self.Upsample_0(output)
-        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output_0), output_0], dim=1))
-
-        if nb_layers == 7:            
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip), self.canonical.inverse(output_5, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip)]    
-        return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip), self.canonical.inverse(output_5, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip), self.canonical.inverse(self.Head_0(output), inverse_permute_and_flip)]
-
-class UnetCPP_2(torch.nn.Module):
-
-    def __init__(self, nb_class: int, mri: bool = False) -> None:
-        super().__init__()
-        if mri:
-            self.normalize  = Standardize()
-        else:
-            self.normalize = ClipAndNormalize()
-        self.canonical = Canonical()
-
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        self.DownConvBlock_4 = ConvBlock(in_channels=256, out_channels=320, downsample=True)
-        
-        self.Upsample_3 = torch.nn.ConvTranspose3d(in_channels=320, out_channels=256, kernel_size=2, stride=2)
-        self.UpConvBlock_3 = ConvBlock(in_channels=256*2, out_channels=256)
-
-        self.Upsample_2 = torch.nn.ConvTranspose3d(in_channels=256, out_channels=128, kernel_size=2, stride=2)
-        self.UpConvBlock_2 = ConvBlock(in_channels=128*2, out_channels=128)
-
-        self.Upsample_1 = torch.nn.ConvTranspose3d(in_channels=128, out_channels=64, kernel_size=2, stride=2)
-        self.UpConvBlock_1 = ConvBlock(in_channels=64*2, out_channels=64)
-
-        self.Upsample_0 = torch.nn.ConvTranspose3d(in_channels=64, out_channels=32, kernel_size=2, stride=2)        
-        self.UpConvBlock_0 = ConvBlock(in_channels=32*2, out_channels=32)
-        self.Head_0 = Head(32, nb_class)
-
-    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([7]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
-        x = self.normalize(x, stats)
-        nb_layers = nb_layers_tensor.item()
-        permute_and_flip = self.canonical.get_permute_and_flip(direction)
-        inverse_permute_and_flip = self.canonical.get_inverse_permute_and_flip(permute_and_flip)
-
-        x = self.canonical(x, permute_and_flip)
-
-        output_0 = self.DownConvBlock_0(x)
-        if nb_layers == 1:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip)]
-        output_1 = self.DownConvBlock_1(output_0)
-        if nb_layers == 2:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip)]
-        output_2 = self.DownConvBlock_2(output_1)
-        if nb_layers == 3:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip)]
-        output_3 = self.DownConvBlock_3(output_2)
-        if nb_layers == 4:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip)]
-        output_4 = self.DownConvBlock_4(output_3)
-        if nb_layers == 5:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip)]
-        
-        output = self.Upsample_3(output_4)
-        output = self.UpConvBlock_3(torch.cat([crop_to_match(output, output_3), output_3], dim=1))
-
-        output = self.Upsample_2(output)
-        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output_2), output_2], dim=1))
-
-        output = self.Upsample_1(output)
-        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output_1), output_1], dim=1))
-
-        output = self.Upsample_0(output)
-        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output_0), output_0], dim=1))
-
-        if nb_layers == 6:            
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip)]    
-        return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output_4, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip), self.canonical.inverse(self.Head_0(output), inverse_permute_and_flip)]
+    @torch.jit.export
+    def norm_count(self, nb_layers: int) -> int:
+        """The normalisations the first ``nb_layers`` layers go through (0: all of them)."""
+        if 0 < nb_layers <= self.depth:
+            return 2 * nb_layers
+        return 2 * (2 * self.depth - 1)
 
 
-class UnetCPP_3(torch.nn.Module):
+def UnetCPP_1(nb_class: int, mri: bool = False, lung: bool = False) -> Unet:
+    return Unet(nb_class, 6, mri, lung)
 
-    def __init__(self, nb_class: int, mri: bool = False) -> None:
-        super().__init__()
-        if mri:
-            self.normalize  = Standardize()
-        else:
-            self.normalize = ClipAndNormalize()
-        self.canonical = Canonical()
-        self.DownConvBlock_0 = ConvBlock(in_channels=1, out_channels=32)
-        self.DownConvBlock_1 = ConvBlock(in_channels=32, out_channels=64, downsample=True)
-        self.DownConvBlock_2 = ConvBlock(in_channels=64, out_channels=128, downsample=True)
-        self.DownConvBlock_3 = ConvBlock(in_channels=128, out_channels=256, downsample=True)
-        
-        self.Upsample_2 = torch.nn.ConvTranspose3d(in_channels=256, out_channels=128, kernel_size=2, stride=2)
-        self.UpConvBlock_2 = ConvBlock(in_channels=128*2, out_channels=128)
 
-        
-        self.Upsample_1 = torch.nn.ConvTranspose3d(in_channels=128, out_channels=64, kernel_size=2, stride=2)
-        self.UpConvBlock_1 = ConvBlock(in_channels=64*2, out_channels=64)
+def UnetCPP_2(nb_class: int, mri: bool = False) -> Unet:
+    return Unet(nb_class, 5, mri)
 
-        self.Upsample_0 = torch.nn.ConvTranspose3d(in_channels=64, out_channels=32, kernel_size=2, stride=2)        
-        self.UpConvBlock_0 = ConvBlock(in_channels=32*2, out_channels=32)
-        self.Head_0 = Head(32, nb_class)
 
-    def forward(self, x: torch.Tensor, nb_layers_tensor: torch.Tensor = torch.tensor([6]), stats: torch.Tensor = torch.tensor([]), direction: torch.Tensor = torch.tensor([])) -> list[torch.Tensor]:
-        x = self.normalize(x, stats)
-        nb_layers = nb_layers_tensor.item()
+def UnetCPP_3(nb_class: int, mri: bool = False) -> Unet:
+    return Unet(nb_class, 4, mri)
 
-        permute_and_flip = self.canonical.get_permute_and_flip(direction)
-        inverse_permute_and_flip = self.canonical.get_inverse_permute_and_flip(permute_and_flip)
 
-        x = self.canonical(x, permute_and_flip)
+def new_key(key: str, depth: int) -> str:
+    """The name in ``Unet`` of a weight named as the former per-depth classes (and Destination_Unet_*.txt) name it."""
+    for old, new in (("DownConvBlock_", "down."), ("Upsample_", "up.{}.Upsample"), ("UpConvBlock_", "up.{}.Block"), ("Head_0", "head")):
+        if key.startswith(old):
+            if old == "Head_0":
+                return "head" + key[len(old):]
+            index, rest = key[len(old):].split(".", 1)
+            return (new + index if old == "DownConvBlock_" else new.format(depth - 2 - int(index))) + "." + rest
+    return key
 
-        output_0 = self.DownConvBlock_0(x)
-        if nb_layers == 1:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip)]
-        output_1 = self.DownConvBlock_1(output_0)
-        if nb_layers == 2:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip)]
-        output_2 = self.DownConvBlock_2(output_1)
-        if nb_layers == 3:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip)]
-        output_3 = self.DownConvBlock_3(output_2)
-        if nb_layers == 4:
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip)]
-        
-        output = self.Upsample_2(output_3)
-        output = self.UpConvBlock_2(torch.cat([crop_to_match(output, output_2), output_2], dim=1))
 
-        output = self.Upsample_1(output)
-        output = self.UpConvBlock_1(torch.cat([crop_to_match(output, output_1), output_1], dim=1))
-
-        output = self.Upsample_0(output)
-        output = self.UpConvBlock_0(torch.cat([crop_to_match(output, output_0), output_0], dim=1))
-
-        if nb_layers == 5:            
-            return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip)]    
-        return [self.canonical.inverse(output_0, inverse_permute_and_flip), self.canonical.inverse(output_1, inverse_permute_and_flip), self.canonical.inverse(output_2, inverse_permute_and_flip), self.canonical.inverse(output_3, inverse_permute_and_flip), self.canonical.inverse(output, inverse_permute_and_flip), self.canonical.inverse(self.Head_0(output), inverse_permute_and_flip)]
-    
 def download(url: str, mri: bool) -> dict[str, torch.Tensor]:
     with open(url.split("/")[-1], 'wb') as f:
         with requests.get(url, stream=True) as r:
@@ -395,7 +322,7 @@ def convert_torchScript_full(model_name: str, model: torch.nn.Module, type: int,
                     
             while "all_modules" in key or "decoder.encoder" in key:
                 key = next(it)
-            tmp[l1.replace("\n", "")] = state_dict[key]
+            tmp[new_key(l1.replace("\n", ""), model.depth)] = state_dict[key]
     if not mri:
         #tmp["normalize.clip_min"] = state_dict["clip_min"]
         #tmp["normalize.clip_max"] = state_dict["clip_max"]
